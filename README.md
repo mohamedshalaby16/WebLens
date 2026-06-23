@@ -145,7 +145,7 @@ GROQ_API_KEY=your_groq_key_here
 GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
-### Run
+### Run the API
 
 ```bash
 cd python
@@ -153,6 +153,19 @@ uvicorn main:app --reload --port 8000
 ```
 
 Open **http://localhost:8000/docs** — Swagger UI loads automatically.
+
+### Run the C# Client
+
+Requires the API to be running first.
+
+```powershell
+cd csharp\WebLens.Client
+dotnet build
+dotnet run -- scan https://example.com/login
+dotnet run -- scan https://example.com/login StealthyFetcher
+dotnet run -- jobs
+dotnet run -- report <job-id>
+```
 
 ---
 
@@ -223,17 +236,17 @@ curl -X POST http://localhost:8000/clone \
 
 ## Development Phases
 
-### Phase 1 — Python Core (Current)
+### Phase 1 — Python Core ✓ Complete
 - Complete Python backend
 - All five components operational
 - Full pipeline: URL → clone → analysis → report
 - Swagger UI for live testing
 
-### Phase 2 — C# Client
-- Native C# console application
+### Phase 2 — C# Client ✓ Complete
+- Native C# console application (.NET 8)
 - Calls FastAPI endpoints via HttpClient
-- Formatted report display
-- Report export to file
+- Color-coded formatted report display
+- Commands: `scan`, `jobs`, `report`
 
 ### Phase 3 — Scale & Extend
 - Batch processing (`POST /batch`)
