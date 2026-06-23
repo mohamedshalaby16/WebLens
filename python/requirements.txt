@@ -1,0 +1,10 @@
+scrapling
+playwright
+fastapi
+uvicorn[standard]
+python-multipart
+semantic-kernel
+openai
+python-dotenv
+httpx
+aiofiles

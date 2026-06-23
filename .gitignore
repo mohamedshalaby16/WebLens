@@ -1,0 +1,19 @@
+# Environment variables — never commit these
+python/.env
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+python/venv/
+venv/
+
+# Runtime output — clones and reports
+python/output/
+output/
+
+# Test files
+python/test_llm.py
