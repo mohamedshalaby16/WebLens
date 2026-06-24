@@ -21,11 +21,15 @@ class CloneResult(BaseModel):
     clone_path: str
     assets_downloaded: int
     assets_failed: int
+    assets_data: dict[str, bytes] = {}
     forms: list[FormData]
     links_internal: list[str]
     links_external: list[str]
     page_title: str
     timestamp: str
+    
+    class Config:
+        arbitrary_types_allowed = True
 
 
 class CloneInfo(BaseModel):
