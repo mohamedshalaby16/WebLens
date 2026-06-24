@@ -156,6 +156,7 @@ class ScraplingCloner:
             clone_path="",  # filled by main.py after storage saves
             assets_downloaded=len(assets_bytes),
             assets_failed=failed_count,
+            assets_data=assets_bytes,
             forms=forms,
             links_internal=links_internal,
             links_external=links_external,
