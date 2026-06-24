@@ -28,6 +28,9 @@ class StorageManager:
         clone_dir = CLONES_DIR / job_id
         assets_dir = clone_dir / "assets"
         assets_dir.mkdir(parents=True, exist_ok=True)
+        for filename, content in assets.items():
+            async with aiofiles.open(assets_dir / filename, "wb") as f:
+                await f.write(content)
 
         index_path = clone_dir / "index.html"
         async with aiofiles.open(index_path, "w", encoding="utf-8") as f:
