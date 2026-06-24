@@ -8,3 +8,4 @@ openai
 python-dotenv
 httpx
 aiofiles
+reportlab
