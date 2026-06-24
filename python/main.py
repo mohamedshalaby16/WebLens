@@ -68,7 +68,7 @@ async def clone_url(request: CloneRequest) -> dict:
         clone_path = await storage.save_clone(
             job_id=job_id,
             html=clone_result.html,
-            assets={},  
+            assets=clone_result.assets_data,  
             meta=meta,
         )
         clone_result.clone_path = clone_path
