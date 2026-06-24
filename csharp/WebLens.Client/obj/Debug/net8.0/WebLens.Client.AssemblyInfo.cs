@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("WebLens.Client")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e867c1a0dc9ca8a472dcb202c6ed6b94cccacffb")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+fdd86b06cebde3b10f25f42b072f3e8cb23d7613")]
 [assembly: System.Reflection.AssemblyProductAttribute("WebLens.Client")]
 [assembly: System.Reflection.AssemblyTitleAttribute("WebLens.Client")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
