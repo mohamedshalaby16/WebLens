@@ -8,7 +8,6 @@
         Background="#0f172a">
 
     <Window.Resources>
-        <!-- Base button style -->
         <Style x:Key="BaseButton" TargetType="Button">
             <Setter Property="FontFamily" Value="Segoe UI"/>
             <Setter Property="FontSize" Value="13"/>
@@ -30,7 +29,6 @@
             </Setter>
         </Style>
 
-        <!-- Primary blue button -->
         <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource BaseButton}">
             <Setter Property="Background" Value="#2563eb"/>
             <Setter Property="Foreground" Value="White"/>
@@ -45,7 +43,6 @@
             </Style.Triggers>
         </Style>
 
-        <!-- Secondary button -->
         <Style x:Key="SecondaryButton" TargetType="Button" BasedOn="{StaticResource BaseButton}">
             <Setter Property="Background" Value="#1e293b"/>
             <Setter Property="Foreground" Value="#94a3b8"/>
@@ -61,7 +58,6 @@
             </Style.Triggers>
         </Style>
 
-        <!-- PDF button -->
         <Style x:Key="PdfButton" TargetType="Button" BasedOn="{StaticResource BaseButton}">
             <Setter Property="Background" Value="#0d9488"/>
             <Setter Property="Foreground" Value="White"/>
@@ -76,7 +72,6 @@
             </Style.Triggers>
         </Style>
 
-        <!-- Section card style -->
         <Style x:Key="SectionCard" TargetType="Border">
             <Setter Property="Background" Value="#1e293b"/>
             <Setter Property="CornerRadius" Value="10"/>
@@ -84,17 +79,14 @@
             <Setter Property="Margin" Value="0,0,0,12"/>
         </Style>
 
-        <!-- Section title -->
         <Style x:Key="SectionTitle" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Segoe UI"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Foreground" Value="#64748b"/>
             <Setter Property="Margin" Value="0,0,0,12"/>
-         
         </Style>
 
-        <!-- Label style -->
         <Style x:Key="FieldLabel" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Segoe UI"/>
             <Setter Property="FontSize" Value="11"/>
@@ -104,7 +96,6 @@
             <Setter Property="MinWidth" Value="130"/>
         </Style>
 
-        <!-- Value style -->
         <Style x:Key="FieldValue" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Segoe UI"/>
             <Setter Property="FontSize" Value="11"/>
@@ -116,23 +107,18 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <!-- Header -->
             <RowDefinition Height="Auto"/>
-            <!-- URL Input -->
             <RowDefinition Height="*"/>
-            <!-- Results -->
             <RowDefinition Height="Auto"/>
-            <!-- Status bar -->
         </Grid.RowDefinitions>
 
-        <!-- ── Header ─────────────────────────────────────────── -->
+        <!-- Header -->
         <Border Grid.Row="0" Background="#0f172a" Padding="30,20,30,16">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-
                 <StackPanel Grid.Column="0">
                     <TextBlock Text="WebLens"
                                FontFamily="Segoe UI"
@@ -145,31 +131,65 @@
                                Foreground="#64748b"
                                Margin="0,2,0,0"/>
                 </StackPanel>
-
-                <!-- Server status indicator -->
                 <StackPanel Grid.Column="1"
-                            Orientation="Horizontal"
-                            VerticalAlignment="Center">
+            Orientation="Horizontal"
+            VerticalAlignment="Center">
                     <Ellipse x:Name="StatusDot"
-                             Width="8" Height="8"
-                             Fill="#ef4444"
-                             Margin="0,0,8,0"/>
+             Width="8" Height="8"
+             Fill="#ef4444"
+             Margin="0,0,8,0"/>
                     <TextBlock x:Name="StatusText"
-                               Text="Connecting..."
-                               FontFamily="Segoe UI"
-                               FontSize="11"
-                               Foreground="#64748b"
-                               VerticalAlignment="Center"/>
+               Text="Connecting..."
+               FontFamily="Segoe UI"
+               FontSize="11"
+               Foreground="#64748b"
+               VerticalAlignment="Center"
+               Margin="0,0,12,0"/>
+                    <Button x:Name="RefreshButton"
+            Content="↻"
+            FontSize="15"
+            Width="30"
+            Height="30"
+            Cursor="Hand"
+            ToolTip="Refresh server connection"
+            Background="Transparent"
+            Foreground="#64748b"
+            BorderThickness="0"
+            VerticalAlignment="Center"
+            Click="RefreshButton_Click">
+                        <Button.Style>
+                            <Style TargetType="Button">
+                                <Setter Property="Background" Value="Transparent"/>
+                                <Setter Property="Foreground" Value="#64748b"/>
+                                <Setter Property="BorderThickness" Value="0"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border Background="{TemplateBinding Background}"
+                                    CornerRadius="4"
+                                    Padding="4">
+                                                <ContentPresenter HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"/>
+                                            </Border>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                                <Style.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter Property="Background" Value="#1e293b"/>
+                                        <Setter Property="Foreground" Value="White"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
                 </StackPanel>
             </Grid>
         </Border>
 
-        <Rectangle Grid.Row="0"
-                   Height="1"
-                   Fill="#1e293b"
-                   VerticalAlignment="Bottom"/>
+        <Rectangle Grid.Row="0" Height="1" Fill="#1e293b" VerticalAlignment="Bottom"/>
 
-        <!-- ── URL Input Bar ──────────────────────────────────── -->
+        <!-- URL Input -->
         <Border Grid.Row="1" Background="#0f172a" Padding="30,16">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -225,15 +245,16 @@
             </Grid>
         </Border>
 
-        <!-- ── Results Panel ─────────────────────────────────── -->
+        <!-- Results Area -->
         <ScrollViewer Grid.Row="2"
                       VerticalScrollBarVisibility="Auto"
                       Padding="30,0,30,20"
                       Background="#0f172a">
+            <Grid>
 
-            <!-- Empty state -->
-            <Grid x:Name="EmptyState">
-                <StackPanel HorizontalAlignment="Center"
+                <!-- Empty State -->
+                <StackPanel x:Name="EmptyState"
+                            HorizontalAlignment="Center"
                             VerticalAlignment="Center"
                             Margin="0,80,0,0">
                     <TextBlock Text="🔍"
@@ -253,7 +274,7 @@
                                Margin="0,8,0,0"/>
                 </StackPanel>
 
-                <!-- Loading state (hidden by default) -->
+                <!-- Loading State -->
                 <StackPanel x:Name="LoadingPanel"
                             Visibility="Collapsed"
                             HorizontalAlignment="Center"
@@ -274,23 +295,25 @@
                                  Background="#1e293b"/>
                 </StackPanel>
 
-                <!-- Results (hidden by default) -->
+                <!-- Results Panel -->
                 <StackPanel x:Name="ResultsPanel"
                             Visibility="Collapsed"
                             Margin="0,20,0,0">
 
-                    <!-- Action buttons -->
+                    <!-- Action Buttons -->
                     <StackPanel Orientation="Horizontal"
                                 HorizontalAlignment="Right"
                                 Margin="0,0,0,16">
                         <Button x:Name="ExportPdfButton"
-                                Content="Export PDF"
+                                Content="⬇  Export PDF"
                                 Style="{StaticResource PdfButton}"
+                                IsEnabled="False"
                                 Margin="0,0,8,0"
                                 Click="ExportPdfButton_Click"/>
                         <Button x:Name="ViewCloneButton"
                                 Content="View Clone"
                                 Style="{StaticResource SecondaryButton}"
+                                IsEnabled="False"
                                 Click="ViewCloneButton_Click"/>
                     </StackPanel>
 
@@ -484,7 +507,7 @@
             </Grid>
         </ScrollViewer>
 
-        <!-- ── Status Bar ─────────────────────────────────────── -->
+        <!-- Status Bar -->
         <Border Grid.Row="3"
                 Background="#0a0f1a"
                 Padding="30,8">

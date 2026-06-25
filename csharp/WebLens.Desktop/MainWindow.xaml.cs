@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
@@ -46,12 +45,25 @@ namespace WebLens.Desktop
             {
                 StatusDot.Fill = new SolidColorBrush(Color.FromRgb(239, 68, 68));
                 StatusText.Text = "Server Offline";
-                StatusBar.Text = "Cannot connect to WebLens API — make sure the Python server is running on port 8000";
+                StatusBar.Text = "Cannot connect to WebLens API — make sure Python server is running on port 8000";
                 AnalyzeButton.IsEnabled = false;
             }
         }
 
-        // ── Input Handling ────────────────────────────────────────────────────
+        private async void RefreshButton_Click(object sender, RoutedEventArgs e)
+        {
+            RefreshButton.IsEnabled = false;
+            StatusText.Text = "Checking...";
+            StatusDot.Fill = new SolidColorBrush(Color.FromRgb(234, 179, 8));
+            await CheckServerStatusAsync();
+
+            // Re-enable Analyze if server is back online
+            bool online = StatusText.Text == "Server Online";
+            AnalyzeButton.IsEnabled = online;
+            RefreshButton.IsEnabled = true;
+        }
+
+        // ── Input ─────────────────────────────────────────────────────────────
 
         private void UrlInput_KeyDown(object sender,
             System.Windows.Input.KeyEventArgs e)
@@ -74,7 +86,7 @@ namespace WebLens.Desktop
             StatusBar.Text = "Ready — enter a URL to begin";
         }
 
-        // ── Main Analysis Flow ────────────────────────────────────────────────
+        // ── Analysis ──────────────────────────────────────────────────────────
 
         private async void AnalyzeButton_Click(object sender, RoutedEventArgs e)
         {
@@ -94,8 +106,12 @@ namespace WebLens.Desktop
 
         private async Task RunAnalysisAsync(string url)
         {
-            // Show loading state
-            SetLoadingState(true, "Cloning page...");
+            // Set loading state
+            EmptyState.Visibility = Visibility.Collapsed;
+            ResultsPanel.Visibility = Visibility.Collapsed;
+            LoadingPanel.Visibility = Visibility.Visible;
+            LoadingText.Text = "Cloning page and downloading assets...";
+
             AnalyzeButton.IsEnabled = false;
             ClearButton.IsEnabled = false;
             ExportPdfButton.IsEnabled = false;
@@ -105,13 +121,13 @@ namespace WebLens.Desktop
             {
                 // Step 1 — Clone
                 StatusBar.Text = $"Cloning {url}...";
-                SetLoadingText("Cloning page and downloading assets...");
+                LoadingText.Text = "Cloning page and downloading assets...";
                 CloneResponse cloneResponse = await _api.CloneAsync(url);
                 _currentJobId = cloneResponse.JobId;
 
                 // Step 2 — Get Report
                 StatusBar.Text = "Running AI analysis...";
-                SetLoadingText("Analyzing page with AI plugins...");
+                LoadingText.Text = "Analyzing page with AI plugins...";
                 WebLensReport report = await _api.GetReportAsync(_currentJobId);
                 _currentReport = report;
 
@@ -121,8 +137,9 @@ namespace WebLens.Desktop
             }
             catch (Exception ex)
             {
+                LoadingPanel.Visibility = Visibility.Collapsed;
+                EmptyState.Visibility = Visibility.Visible;
                 StatusBar.Text = $"Error: {ex.Message}";
-                SetLoadingState(false, "");
                 MessageBox.Show(
                     $"Analysis failed:\n\n{ex.Message}",
                     "WebLens Error",
@@ -136,32 +153,29 @@ namespace WebLens.Desktop
             }
         }
 
-        // ── Display Report ────────────────────────────────────────────────────
+        // ── Display ───────────────────────────────────────────────────────────
 
         private void DisplayReport(WebLensReport report)
         {
-            // Hide loading, show results
-            SetLoadingState(false, "");
+            // Switch visibility — order matters
+            LoadingPanel.Visibility = Visibility.Collapsed;
             EmptyState.Visibility = Visibility.Collapsed;
             ResultsPanel.Visibility = Visibility.Visible;
 
-            // Risk score banner
             string verdict = report.PhishingRisk.Verdict;
             Brush fg = RiskScoreHelper.GetScoreColor(verdict);
             Brush bg = RiskScoreHelper.GetScoreBackground(verdict);
 
+            // Risk banner
             RiskBanner.Background = bg;
             RiskScoreText.Text = report.PhishingRisk.Score.ToString();
             RiskScoreText.Foreground = fg;
             RiskProgressBar.Value = report.PhishingRisk.Score;
             RiskProgressBar.Foreground = fg;
 
+            var fgSolid = (SolidColorBrush)fg;
             VerdictBadge.Background = new SolidColorBrush(
-                Color.FromArgb(40,
-                    ((SolidColorBrush)fg).Color.R,
-                    ((SolidColorBrush)fg).Color.G,
-                    ((SolidColorBrush)fg).Color.B));
-
+                Color.FromArgb(40, fgSolid.Color.R, fgSolid.Color.G, fgSolid.Color.B));
             VerdictIcon.Text = RiskScoreHelper.GetVerdictIcon(verdict);
             VerdictIcon.Foreground = fg;
             VerdictText.Text = verdict.ToUpper();
@@ -200,7 +214,7 @@ namespace WebLens.Desktop
             // Explanation
             ExplanationText.Text = report.PhishingRisk.Explanation;
 
-            // Enable action buttons
+            // Enable buttons
             ExportPdfButton.IsEnabled = true;
             ViewCloneButton.IsEnabled = true;
         }
@@ -228,9 +242,8 @@ namespace WebLens.Desktop
                 byte[] pdfBytes = await _api.GetReportPdfAsync(_currentJobId);
                 await File.WriteAllBytesAsync(dialog.FileName, pdfBytes);
 
-                StatusBar.Text = $"PDF saved to {dialog.FileName}";
+                StatusBar.Text = $"PDF saved — {dialog.FileName}";
 
-                // Ask user if they want to open it
                 var result = MessageBox.Show(
                     "PDF report saved successfully. Open it now?",
                     "Export Complete",
@@ -258,32 +271,8 @@ namespace WebLens.Desktop
         private void ViewCloneButton_Click(object sender, RoutedEventArgs e)
         {
             if (string.IsNullOrEmpty(_currentJobId)) return;
-
             string url = $"http://localhost:8000/clone/{_currentJobId}";
-            Process.Start(new ProcessStartInfo(url)
-            { UseShellExecute = true });
-        }
-
-        // ── Helpers ───────────────────────────────────────────────────────────
-
-        private void SetLoadingState(bool loading, string message)
-        {
-            if (loading)
-            {
-                EmptyState.Visibility = Visibility.Collapsed;
-                ResultsPanel.Visibility = Visibility.Collapsed;
-                LoadingPanel.Visibility = Visibility.Visible;
-                LoadingText.Text = message;
-            }
-            else
-            {
-                LoadingPanel.Visibility = Visibility.Collapsed;
-            }
-        }
-
-        private void SetLoadingText(string message)
-        {
-            LoadingText.Text = message;
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
         }
     }
 }
