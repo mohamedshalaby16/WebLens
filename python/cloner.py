@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+
 
 import httpx
 from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
@@ -76,11 +78,8 @@ class ScraplingCloner:
                     response = await client.get(absolute_url)
                     response.raise_for_status()
                     parsed = urlparse(absolute_url)
-                    filename = Path(parsed.path).name or "asset"
-                    if filename in assets_bytes:
-                        ext = "".join(Path(filename).suffixes) or ""
-                        stem = Path(filename).stem
-                        filename = f"{stem}_{len(assets_bytes)}{ext}"
+                    extention = Path(parsed.path).suffix or ""
+                    filename = secrets.token_hex(8) + extention
                     assets_bytes[filename] = response.content
                     url_to_local[absolute_url] = f"assets/{filename}"
                     logger.debug("Downloaded asset: %s", absolute_url)
@@ -157,6 +156,7 @@ class ScraplingCloner:
             clone_path="",  # filled by main.py after storage saves
             assets_downloaded=len(assets_bytes),
             assets_failed=failed_count,
+            assets_data=assets_bytes,
             forms=forms,
             links_internal=links_internal,
             links_external=links_external,

@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from report_generator import generate_pdf
 
 from analyzer import SKAnalyzer
 from cloner import ScraplingCloner
@@ -68,7 +69,7 @@ async def clone_url(request: CloneRequest) -> dict:
         clone_path = await storage.save_clone(
             job_id=job_id,
             html=clone_result.html,
-            assets={},  
+            assets=clone_result.assets_data,  
             meta=meta,
         )
         clone_result.clone_path = clone_path
@@ -120,3 +121,17 @@ async def list_jobs() -> list[JobStatus]:
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "version": "1.0"}
+
+@app.get("/report/{job_id}/pdf")
+async def get_report_pdf(job_id: str) -> Response:
+    report = await storage.get_report(job_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    pdf_bytes = generate_pdf(report)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=weblens-report-{job_id[:8]}.pdf"
+        }
+    )
