@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from report_generator import generate_pdf
 
 from analyzer import SKAnalyzer
@@ -39,6 +40,14 @@ app = FastAPI(
     version="1.0",
     lifespan=lifespan,
 )
+
+app.mount("/clones", StaticFiles(directory="output/clones"), name="clones")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/")
+async def serve_frontend():
+    return FileResponse("static/index.html")
 
 
 @app.post("/clone")
@@ -106,11 +115,11 @@ async def get_report(job_id: str) -> WebLensReport:
 
 
 @app.get("/clone/{job_id}")
-async def get_clone(job_id: str) -> FileResponse:
+async def get_clone(job_id: str):
     clone_path = storage.get_clone_path(job_id)
     if clone_path is None:
         raise HTTPException(status_code=404, detail="Clone not found")
-    return FileResponse(clone_path, media_type="text/html")
+    return RedirectResponse(url=f"/clones/{job_id}/index.html")
 
 
 @app.get("/jobs", response_model=list[JobStatus])
