@@ -43,7 +43,7 @@ class ScraplingCloner:
 
     def _fetch_page(self, url: str, fetcher_name: str):
         if fetcher_name == "DynamicFetcher":
-            return DynamicFetcher(auto_match=False).get(url)
+            return DynamicFetcher(auto_match=False).fetch(url)
         if fetcher_name == "StealthyFetcher":
             fetcher = StealthyFetcher(auto_match=False)
             return fetcher.fetch(url)          
