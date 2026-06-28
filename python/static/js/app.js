@@ -7,7 +7,7 @@ let currentJobId = null;
 const urlInput      = document.getElementById('urlInput');
 const analyzeBtn    = document.getElementById('analyzeBtn');
 const clearBtn      = document.getElementById('clearBtn');
-const refreshBtn    = document.getElementById('refreshStatusBtn');
+const refreshBtn    = document.getElementById('statusGroup');
 const statusDot     = document.getElementById('statusDot');
 const statusLabel   = document.getElementById('statusLabel');
 const statusBar     = document.getElementById('statusBar');
@@ -25,6 +25,17 @@ const viewCloneBtn  = document.getElementById('viewCloneBtn');
 
 function setStatus(msg) {
   statusBar.textContent = msg;
+}
+
+function setLoadingStep(text) {
+  loadingStep.innerHTML = '<span class="terminal-cursor"></span>' + text;
+}
+
+function buildBarText(score) {
+  const total = 10;
+  const filled = Math.round((score / 100) * total);
+  const empty  = total - filled;
+  return '█'.repeat(filled) + '░'.repeat(empty);
 }
 
 function scoreColor(score) {
@@ -64,14 +75,14 @@ async function checkHealth() {
   try {
     const res = await fetch('/health');
     if (res.ok) {
-      statusDot.className   = 'status-dot online';
-      statusLabel.textContent = 'API Online';
+      statusDot.className     = 'status-dot online';
+      statusLabel.textContent = 'online';
     } else {
       throw new Error('non-ok');
     }
   } catch {
     statusDot.className     = 'status-dot offline';
-    statusLabel.textContent = 'API Offline';
+    statusLabel.textContent = 'offline';
   }
 }
 
@@ -100,7 +111,7 @@ async function analyze() {
   analyzeBtn.disabled = true;
 
   showPanel('loading');
-  loadingStep.textContent = 'Cloning page and downloading assets...';
+  setLoadingStep('→ Fetching page...');
   setStatus('Starting analysis for ' + url);
 
   try {
@@ -120,7 +131,7 @@ async function analyze() {
     currentJobId = cloneData.job_id;
 
     /* Step 2 — report */
-    loadingStep.textContent = 'Analyzing page with AI plugins...';
+    setLoadingStep('→ Running AI analysis...');
     setStatus('Fetching report for job ' + currentJobId);
 
     const reportRes = await fetch('/report/' + currentJobId);
@@ -159,19 +170,16 @@ function renderReport(report) {
   const verdict   = risk.verdict ?? 'Unknown';
   const color     = scoreColor(score);
 
-  /* Risk banner */
+  /* Score + bar */
   const riskScore = document.getElementById('riskScore');
   riskScore.textContent = score;
   riskScore.style.color = color;
 
-  const badge = document.getElementById('verdictBadge');
-  badge.textContent  = verdict;
-  badge.className    = 'verdict-badge ' + verdictClass(verdict);
+  document.getElementById('scoreBarText').textContent = buildBarText(score);
 
-  /* Progress bar */
-  const fill = document.getElementById('progressFill');
-  fill.style.background = color;
-  setTimeout(() => { fill.style.width = Math.min(score, 100) + '%'; }, 50);
+  const badge = document.getElementById('verdictBadge');
+  badge.textContent = verdict;
+  badge.className   = 'verdict-pill ' + verdictClass(verdict);
 
   /* Clone info */
   document.getElementById('infoTitle').textContent      = clone.page_title      || '—';
@@ -265,11 +273,7 @@ function clearAll() {
   clearBtn.style.display = 'none';
   analyzeBtn.disabled = false;
 
-  /* reset progress bar instantly */
-  const fill = document.getElementById('progressFill');
-  fill.style.transition = 'none';
-  fill.style.width = '0%';
-  setTimeout(() => { fill.style.transition = 'width 0.6s ease'; }, 50);
+  document.getElementById('scoreBarText').textContent = '';
 
   showPanel('empty');
   setStatus('');

@@ -1,6 +1,8 @@
 import asyncio
+import ipaddress
 import logging
 import secrets
+import socket
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -12,6 +14,44 @@ from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
 from models import CloneResult, FormData
 
 logger = logging.getLogger(__name__)
+
+
+def is_safe_url(url: str) -> bool:
+    """
+    Validate URL is safe to fetch.
+    Blocks private IPs, loopback, reserved ranges, and non-HTTP schemes.
+    """
+    try:
+        parsed = urlparse(url)
+
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        if not parsed.hostname:
+            return False
+
+        if len(url) > 2000:
+            return False
+
+        try:
+            ip_str = socket.gethostbyname(parsed.hostname)
+            ip = ipaddress.ip_address(ip_str)
+
+            if (ip.is_private or
+                ip.is_loopback or
+                ip.is_reserved or
+                ip.is_link_local or
+                ip.is_multicast or
+                ip.is_unspecified):
+                return False
+
+        except socket.gaierror:
+            return False
+
+        return True
+
+    except Exception:
+        return False
 
 ASSET_TAGS = [
     ("img", "src"),
@@ -126,6 +166,13 @@ class ScraplingCloner:
     async def clone(
         self, url: str, job_id: str, force_fetcher: str | None = None
     ) -> CloneResult:
+        if not is_safe_url(url):
+            raise ValueError(
+                f"URL '{url}' is not allowed. "
+                "Only public HTTP/HTTPS URLs are accepted. "
+                "Internal, private, and loopback addresses are blocked."
+            )
+
         fetcher_name = force_fetcher or await self.auto_select_fetcher(url)
         logger.info("Cloning %s with %s (job_id=%s)", url, fetcher_name, job_id)
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WebLens — Web Intelligence Platform</title>
+  <title>WebLens</title>
   <link rel="stylesheet" href="/static/css/style.css" />
 </head>
 <body>
@@ -11,21 +11,12 @@
   <header class="header">
     <div class="header-inner">
       <div class="logo">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          <line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
-        </svg>
-        <span class="logo-text">Web<span class="logo-accent">Lens</span></span>
+        <span class="logo-text">WebLens</span>
+        <span class="logo-tagline">web intelligence</span>
       </div>
-      <div class="status-group">
+      <div class="status-group" id="statusGroup" title="Click to refresh">
         <span class="status-dot" id="statusDot"></span>
-        <span class="status-label" id="statusLabel">Checking...</span>
-        <button class="btn-icon" id="refreshStatusBtn" title="Refresh status">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
-            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-          </svg>
-        </button>
+        <span class="status-label" id="statusLabel">checking</span>
       </div>
     </div>
   </header>
@@ -37,97 +28,100 @@
         type="text"
         class="url-input"
         id="urlInput"
-        placeholder="Enter a URL to analyze  (e.g. https://example.com)"
+        placeholder="https://example.com"
         autocomplete="off"
         spellcheck="false"
       />
-      <button class="btn-primary" id="analyzeBtn">Analyze</button>
-      <button class="btn-danger" id="clearBtn" style="display:none;">Clear</button>
+      <button class="btn-analyze" id="analyzeBtn">Analyze</button>
+      <button class="btn-clear" id="clearBtn" style="display:none;">clear</button>
     </div>
 
     <!-- Empty State -->
     <div class="empty-state" id="emptyState">
-      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-      </svg>
-      <p class="empty-title">No analysis yet</p>
-      <p class="empty-sub">Enter a URL above and click Analyze to begin</p>
+      <span class="empty-bracket">[ WebLens ]</span>
+      <p class="empty-text">Enter a URL to begin intelligence gathering</p>
     </div>
 
     <!-- Loading State -->
     <div class="loading-state" id="loadingState" style="display:none;">
-      <div class="spinner"></div>
-      <p class="loading-step" id="loadingStep">Initializing...</p>
+      <p class="loading-step" id="loadingStep">
+        <span class="terminal-cursor"></span>
+        Initializing...
+      </p>
     </div>
 
     <!-- Error State -->
     <div class="error-state" id="errorState" style="display:none;">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-      </svg>
+      <span class="error-prefix">! error</span>
       <p class="error-title" id="errorTitle">Something went wrong</p>
       <p class="error-sub" id="errorSub">Please try again.</p>
     </div>
 
-    <!-- Results Section -->
+    <!-- Results -->
     <div class="results" id="results" style="display:none;">
 
-      <!-- Risk Banner -->
-      <div class="risk-banner" id="riskBanner">
-        <div class="risk-left">
-          <span class="risk-label">Phishing Risk Score</span>
-          <span class="risk-score" id="riskScore">--</span>
-          <span class="risk-max">/ 100</span>
+      <!-- Score Row -->
+      <div class="score-row">
+        <span class="score-number" id="riskScore">--</span>
+        <span class="score-denom">/ 100</span>
+        <div class="score-bar-wrap">
+          <span class="score-bar-text" id="scoreBarText"></span>
         </div>
-        <div class="risk-right">
-          <span class="verdict-badge" id="verdictBadge">--</span>
-        </div>
+        <span class="verdict-pill" id="verdictBadge">--</span>
       </div>
 
-      <!-- Progress Bar -->
-      <div class="progress-bar-track">
-        <div class="progress-bar-fill" id="progressFill"></div>
-      </div>
-
-      <!-- Action Buttons -->
-      <div class="action-row">
-        <button class="btn-pdf" id="exportPdfBtn" disabled>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
-            <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
-          </svg>
-          Export PDF
-        </button>
-        <button class="btn-secondary" id="viewCloneBtn" disabled>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-          </svg>
-          View Clone
-        </button>
-      </div>
-
-      <!-- Cards Row: Clone Info + Page Intelligence -->
+      <!-- Clone Info + Page Intelligence -->
       <div class="cards-row">
 
         <div class="card">
           <p class="card-title">Clone Information</p>
           <div class="info-grid">
-            <div class="info-row"><span class="info-label">Page Title</span><span class="info-value" id="infoTitle">--</span></div>
-            <div class="info-row"><span class="info-label">Fetcher Used</span><span class="info-value" id="infoFetcher">--</span></div>
-            <div class="info-row"><span class="info-label">Assets Downloaded</span><span class="info-value" id="infoAssetsOk">--</span></div>
-            <div class="info-row"><span class="info-label">Assets Failed</span><span class="info-value" id="infoAssetsFail">--</span></div>
-            <div class="info-row"><span class="info-label">Forms Found</span><span class="info-value" id="infoForms">--</span></div>
-            <div class="info-row"><span class="info-label">Links Found</span><span class="info-value" id="infoLinks">--</span></div>
+            <div class="info-row">
+              <span class="info-label">Page Title</span>
+              <span class="info-value" id="infoTitle">--</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Fetcher</span>
+              <span class="info-value" id="infoFetcher">--</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Assets OK</span>
+              <span class="info-value" id="infoAssetsOk">--</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Assets Failed</span>
+              <span class="info-value" id="infoAssetsFail">--</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Forms</span>
+              <span class="info-value" id="infoForms">--</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Links</span>
+              <span class="info-value" id="infoLinks">--</span>
+            </div>
           </div>
         </div>
 
         <div class="card">
           <p class="card-title">Page Intelligence</p>
           <div class="info-grid">
-            <div class="info-row"><span class="info-label">Page Type</span><span class="info-value" id="infoPageType">--</span></div>
-            <div class="info-row"><span class="info-label">Tech Stack</span><span class="info-value" id="infoTechStack">--</span></div>
-            <div class="info-row"><span class="info-label">External Links</span><span class="info-value" id="infoExtLinks">--</span></div>
-            <div class="info-row"><span class="info-label">Internal Links</span><span class="info-value" id="infoIntLinks">--</span></div>
+            <div class="info-row">
+              <span class="info-label">Page Type</span>
+              <span class="info-value" id="infoPageType">--</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Tech Stack</span>
+              <span class="info-value" id="infoTechStack">--</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">External Links</span>
+              <span class="info-value" id="infoExtLinks">--</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Internal Links</span>
+              <span class="info-value" id="infoIntLinks">--</span>
+            </div>
           </div>
           <div class="info-summary-row">
             <span class="info-label">Summary</span>
@@ -137,22 +131,29 @@
 
       </div>
 
-      <!-- Red Flags Card -->
-      <div class="card card-danger" id="redFlagsCard" style="display:none;">
-        <p class="card-title card-title-danger">Red Flags Detected</p>
+      <!-- Red Flags -->
+      <div class="red-flags-card" id="redFlagsCard" style="display:none;">
+        <p class="card-title">Red Flags</p>
         <ul class="red-flag-list" id="redFlagList"></ul>
       </div>
 
-      <!-- Assessment Card -->
-      <div class="card">
+      <!-- Assessment -->
+      <div class="assessment-card">
         <p class="card-title">Assessment</p>
         <p class="assessment-text" id="assessmentText">--</p>
       </div>
 
+      <!-- Actions -->
+      <div class="action-row">
+        <button class="btn-view-clone" id="viewCloneBtn" disabled>view clone</button>
+        <button class="btn-pdf" id="exportPdfBtn" disabled>Export PDF</button>
+      </div>
+
     </div>
+
   </main>
 
-  <div class="status-bar" id="statusBar"></div>
+  <div class="status-bar" id="statusBar">ready</div>
 
   <script src="/static/js/app.js"></script>
 </body>
