@@ -17,3 +17,15 @@ output/
 
 # Test files
 python/test_llm.py
+
+# Visual Studio local files
+csharp/.vs/
+.vs/
+*.user
+*.suo
+*.vsidx
+*.vspscc
+
+# Build output
+csharp/**/bin/
+csharp/**/obj/
