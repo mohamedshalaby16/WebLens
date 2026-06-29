@@ -164,6 +164,24 @@ body {
   cursor: not-allowed;
 }
 
+.fetcher-select {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border: none;
+  border-left: 1px solid var(--border);
+  padding: 11px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+  outline: none;
+  appearance: none;
+}
+
+.fetcher-select:focus {
+  color: var(--text-primary);
+}
+
 .btn-clear {
   background: none;
   border: none;

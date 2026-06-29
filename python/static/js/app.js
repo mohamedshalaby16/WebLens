@@ -116,10 +116,14 @@ async function analyze() {
 
   try {
     /* Step 1 — clone */
+    const fetcherValue = document.getElementById('fetcherSelect').value;
     const cloneRes = await fetch('/clone', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({
+        url,
+        force_fetcher: fetcherValue === 'Auto' ? null : fetcherValue,
+      }),
     });
 
     if (!cloneRes.ok) {
