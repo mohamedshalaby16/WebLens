@@ -62,7 +62,29 @@ ASSET_TAGS = [
 
 class ScraplingCloner:
 
+    ALWAYS_DYNAMIC_DOMAINS = [
+        'tiktok.com',
+        'instagram.com',
+        'facebook.com',
+        'twitter.com',
+        'x.com',
+        'linkedin.com',
+        'netflix.com',
+        'spotify.com',
+        'pinterest.com',
+        'reddit.com',
+        'discord.com',
+        'notion.so',
+        'figma.com',
+    ]
+
     async def auto_select_fetcher(self, url: str) -> str:
+        from urllib.parse import urlparse as _urlparse
+        domain = _urlparse(url).netloc.lower().replace('www.', '')
+        if any(d in domain for d in self.ALWAYS_DYNAMIC_DOMAINS):
+            logger.info("Domain %s is JS-heavy, forcing DynamicFetcher", domain)
+            return "DynamicFetcher"
+
         if url.startswith("http://"):
             return "Fetcher"
         try:
@@ -98,6 +120,7 @@ class ScraplingCloner:
         """
         assets_bytes: dict[str, bytes] = {}
         url_to_local: dict[str, str] = {}
+        raw_to_local: dict[str, str] = {}
         seen: set[str] = set()
         failed_count: int = 0
 
@@ -113,7 +136,7 @@ class ScraplingCloner:
                     urls_to_fetch.append((absolute, raw))
 
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            for absolute_url, _ in urls_to_fetch:
+            for absolute_url, raw_value in urls_to_fetch:
                 try:
                     response = await client.get(absolute_url)
                     response.raise_for_status()
@@ -122,19 +145,96 @@ class ScraplingCloner:
                     filename = secrets.token_hex(8) + extention
                     assets_bytes[filename] = response.content
                     url_to_local[absolute_url] = f"assets/{filename}"
+                    raw_to_local[raw_value] = f"assets/{filename}"
                     logger.debug("Downloaded asset: %s", absolute_url)
+
+                    if filename.endswith('.css'):
+                        processed = await self._process_css_assets(
+                            css_content=response.content,
+                            css_url=absolute_url,
+                            assets_bytes=assets_bytes,
+                            url_to_local=url_to_local,
+                            client=client,
+                            seen=seen,
+                        )
+                        assets_bytes[filename] = processed
+
                 except Exception:
                     logger.warning("Failed to download asset: %s", absolute_url)
                     failed_count += 1
 
-        return assets_bytes, url_to_local, failed_count
+        return assets_bytes, url_to_local, failed_count, raw_to_local
+
+    async def _process_css_assets(
+        self,
+        css_content: bytes,
+        css_url: str,
+        assets_bytes: dict[str, bytes],
+        url_to_local: dict[str, str],
+        client: httpx.AsyncClient,
+        seen: set[str],
+    ) -> bytes:
+        import re
+        try:
+            text = css_content.decode('utf-8', errors='ignore')
+            pattern = re.compile(r'url\(\s*["\']?([^)"\']+)["\']?\s*\)')
+            matches = list(pattern.finditer(text))
+
+            for match in matches:
+                inner = match.group(1).strip().strip('"\'')
+                if not inner or inner.startswith('data:') or inner.startswith('#'):
+                    continue
+
+                absolute = urljoin(css_url, inner)
+
+                if absolute in url_to_local:
+                    local = url_to_local[absolute]
+                    text = text.replace(match.group(0), f"url('{local}')")
+                    continue
+
+                if absolute in seen:
+                    continue
+
+                seen.add(absolute)
+
+                try:
+                    response = await client.get(absolute)
+                    response.raise_for_status()
+                    extension = Path(urlparse(absolute).path).suffix or ''
+                    filename = secrets.token_hex(8) + extension
+                    while filename in assets_bytes:
+                        filename = secrets.token_hex(8) + extension
+                    assets_bytes[filename] = response.content
+                    local_path = f'assets/{filename}'
+                    url_to_local[absolute] = local_path
+                    text = text.replace(match.group(0), f"url('{local_path}')")
+                    logger.debug("Downloaded CSS asset: %s", absolute)
+                except Exception:
+                    logger.warning("Failed to download CSS asset: %s", absolute)
+
+            return text.encode('utf-8')
+
+        except Exception as exc:
+            logger.warning("CSS processing failed for %s: %s", css_url, exc)
+            return css_content
 
     def _rewrite_html(
-        self, html: str, url_to_local: dict[str, str], base_url: str
+        self,
+        html: str,
+        url_to_local: dict[str, str],
+        raw_to_local: dict[str, str],
+        base_url: str,
     ) -> str:
         for original_url, local_path in url_to_local.items():
             html = html.replace(f'"{original_url}"', f'"{local_path}"')
             html = html.replace(f"'{original_url}'", f"'{local_path}'")
+
+        for raw_value, local_path in raw_to_local.items():
+            if raw_value not in html:
+                continue
+            html = html.replace(f'"{raw_value}"', f'"{local_path}"')
+            html = html.replace(f"'{raw_value}'", f"'{local_path}'")
+
         return html
 
     def _extract_forms(self, page) -> list[FormData]:
@@ -173,7 +273,10 @@ class ScraplingCloner:
                 "Internal, private, and loopback addresses are blocked."
             )
 
-        fetcher_name = force_fetcher or await self.auto_select_fetcher(url)
+        if force_fetcher and force_fetcher != "Auto":
+            fetcher_name = force_fetcher
+        else:
+            fetcher_name = await self.auto_select_fetcher(url)
         logger.info("Cloning %s with %s (job_id=%s)", url, fetcher_name, job_id)
 
         try:
@@ -183,10 +286,12 @@ class ScraplingCloner:
 
         html_content = page.html_content if hasattr(page, "html_content") else str(page)
 
-        assets_bytes, url_to_local, failed_count = await self._download_assets(
-            page, url
+        assets_bytes, url_to_local, failed_count, raw_to_local = \
+            await self._download_assets(page, url)
+
+        rewritten_html = self._rewrite_html(
+            html_content, url_to_local, raw_to_local, url
         )
-        rewritten_html = self._rewrite_html(html_content, url_to_local, url)
 
         forms = self._extract_forms(page)
         links_internal, links_external = self._extract_links(page, url)
