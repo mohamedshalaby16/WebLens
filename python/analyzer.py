@@ -7,8 +7,11 @@ from datetime import datetime, timezone
 import openai
 import semantic_kernel as sk
 from dotenv import load_dotenv
-from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
-from semantic_kernel.functions import kernel_function
+from semantic_kernel.connectors.ai.open_ai import (
+    OpenAIChatCompletion,
+    OpenAIChatPromptExecutionSettings,
+)
+from semantic_kernel.functions import KernelArguments, kernel_function
 
 from models import (
     CloneInfo,
@@ -21,6 +24,11 @@ from models import (
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+_execution_settings = OpenAIChatPromptExecutionSettings(
+    temperature=0,
+    max_tokens=1000,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -131,7 +139,10 @@ Return ONLY valid JSON. No markdown. No explanation. No code fences.
 HTML:
 {html[:15000]}"""
 
-        result = await self._kernel.invoke_prompt(prompt)
+        result = await self._kernel.invoke_prompt(
+            prompt,
+            arguments=KernelArguments(settings=_execution_settings),
+        )
         return str(result)
 
     async def get_intel(
@@ -204,7 +215,10 @@ HTML (first 15000 chars):
 
 Return ONLY valid JSON. No markdown. No explanation. No code fences."""
 
-        result = await self._kernel.invoke_prompt(prompt)
+        result = await self._kernel.invoke_prompt(
+            prompt,
+            arguments=KernelArguments(settings=_execution_settings),
+        )
         raw = str(result).strip()
         data = _parse_json_response(raw)
 

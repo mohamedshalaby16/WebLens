@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiofiles
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR = Path(__file__).parent / "output"
 CLONES_DIR = OUTPUT_DIR / "clones"
 REPORTS_DIR = OUTPUT_DIR / "reports"
+SUBMISSIONS_DIR = OUTPUT_DIR / "submissions"
 DB_PATH = OUTPUT_DIR / "db.json"
 
 
@@ -19,6 +21,7 @@ class StorageManager:
     def __init__(self) -> None:
         CLONES_DIR.mkdir(parents=True, exist_ok=True)
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        SUBMISSIONS_DIR.mkdir(parents=True, exist_ok=True)
         if not DB_PATH.exists():
             DB_PATH.write_text("[]", encoding="utf-8")
 
@@ -114,3 +117,35 @@ class StorageManager:
         if index_path.exists():
             return str(index_path)
         return None
+
+    def save_submission(self, job_id: str, submission: dict) -> None:
+        """
+        Append a form submission to the job's submissions log file.
+        File: output/submissions/{job_id}.json
+        """
+        sub_file = SUBMISSIONS_DIR / f"{job_id}.json"
+
+        if sub_file.exists():
+            with open(sub_file, "r", encoding="utf-8") as f:
+                submissions = json.load(f)
+        else:
+            submissions = []
+
+        submission["captured_at"] = datetime.now(timezone.utc).isoformat()
+        submissions.append(submission)
+
+        with open(sub_file, "w", encoding="utf-8") as f:
+            json.dump(submissions, f, indent=2)
+
+    def get_submissions(self, job_id: str) -> list:
+        """
+        Get all captured form submissions for a job.
+        Returns empty list if no submissions file exists.
+        """
+        sub_file = SUBMISSIONS_DIR / f"{job_id}.json"
+
+        if not sub_file.exists():
+            return []
+
+        with open(sub_file, "r", encoding="utf-8") as f:
+            return json.load(f)

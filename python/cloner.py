@@ -1,14 +1,18 @@
 import asyncio
 import ipaddress
 import logging
+import re
 import secrets
 import socket
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
-
 import httpx
+
+from playwright.sync_api import sync_playwright
+from scrapling import Selector as ScraplingSelector
 from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
 
 from models import CloneResult, FormData
@@ -60,6 +64,27 @@ ASSET_TAGS = [
 ]
 
 
+def _safe_extension(url: str) -> str:
+    """
+    Safely extract file extension from a URL.
+    Returns empty string if extension looks invalid.
+    """
+    import re
+    from urllib.parse import unquote
+    try:
+        path = urlparse(url).path
+        path = unquote(path)
+        last_segment = path.rstrip('/').split('/')[-1]
+        last_segment = last_segment.split('?')[0].split('#')[0]
+        if '.' in last_segment:
+            ext = '.' + last_segment.rsplit('.', 1)[-1]
+            if re.match(r'^\.[a-zA-Z0-9]{1,5}$', ext):
+                return ext
+        return ''
+    except Exception:
+        return ''
+
+
 class ScraplingCloner:
 
     ALWAYS_DYNAMIC_DOMAINS = [
@@ -79,37 +104,112 @@ class ScraplingCloner:
     ]
 
     async def auto_select_fetcher(self, url: str) -> str:
-        from urllib.parse import urlparse as _urlparse
-        domain = _urlparse(url).netloc.lower().replace('www.', '')
-        if any(d in domain for d in self.ALWAYS_DYNAMIC_DOMAINS):
-            logger.info("Domain %s is JS-heavy, forcing DynamicFetcher", domain)
-            return "DynamicFetcher"
-
+        # HTTP sites — use basic Fetcher
         if url.startswith("http://"):
             return "Fetcher"
+
+        # Check for Cloudflare protection with a quick probe
         try:
             page = Fetcher(auto_match=False).get(url, stealthy_headers=True)
             html = page.html_content if hasattr(page, "html_content") else str(page)
             if "cf-browser-verification" in html or "challenge-running" in html:
+                logger.info("Cloudflare detected for %s", url)
                 return "StealthyFetcher"
-            if page.css("form") or page.css("input"):
-                return "Fetcher"
-            root = page.css("div#root, div#app")
-            inputs = page.css("input")
-            if root and not inputs:
-                return "DynamicFetcher"
-            return "Fetcher"
         except Exception:
-            logger.exception("Auto-select probe failed for %s", url)
-            return "Fetcher"
+            pass
+
+        # Default to DynamicFetcher for everything else
+        # It renders full JavaScript before capturing HTML
+        logger.info("Using DynamicFetcher for %s", url)
+        return "DynamicFetcher"
 
     def _fetch_page(self, url: str, fetcher_name: str):
         if fetcher_name == "DynamicFetcher":
             return DynamicFetcher(auto_match=False).fetch(url)
         if fetcher_name == "StealthyFetcher":
             fetcher = StealthyFetcher(auto_match=False)
-            return fetcher.fetch(url)          
+            return fetcher.fetch(url)
         return Fetcher(auto_match=False).get(url, stealthy_headers=True)
+
+    def _fetch_page_with_interception_sync(
+        self, url: str
+    ) -> tuple[str, dict[str, bytes]]:
+        """
+        Use Playwright sync API to fetch a page and intercept all network
+        requests. Returns (html_content, {absolute_url: bytes}).
+        Runs synchronously — call via asyncio.to_thread from async context.
+        """
+        captured_assets: dict[str, bytes] = {}
+        lock = threading.Lock()
+
+        def handle_response(response):
+            try:
+                url_str = response.url
+                content_type = response.headers.get('content-type', '')
+                asset_types = [
+                    'text/css',
+                    'application/javascript',
+                    'text/javascript',
+                    'font/',
+                    'image/',
+                    'application/font',
+                    'application/x-font',
+                ]
+                is_asset = any(t in content_type for t in asset_types)
+                if is_asset and response.status == 200:
+                    body = response.body()
+                    if body:
+                        with lock:
+                            captured_assets[url_str] = body
+                        logger.debug(
+                            "Intercepted: %s (%d bytes)", url_str, len(body)
+                        )
+            except Exception as exc:
+                logger.debug("Could not capture response: %s", exc)
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-web-security',
+                    '--disable-features=IsolateOrigins,site-per-process',
+                ]
+            )
+            context = browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent=(
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/120.0.0.0 Safari/537.36'
+                ),
+                ignore_https_errors=True,
+            )
+            page = context.new_page()
+            page.on('response', handle_response)
+
+            try:
+                page.goto(url, wait_until='networkidle', timeout=60000)
+                page.wait_for_timeout(3000)
+                html_content = page.content()
+            finally:
+                browser.close()
+
+        return html_content, captured_assets
+
+    async def _fetch_page_with_interception(
+        self, url: str
+    ) -> tuple[str, dict[str, bytes]]:
+        """
+        Async wrapper around _fetch_page_with_interception_sync.
+        Runs the sync Playwright in a thread to avoid event loop conflicts
+        on Python 3.14 Windows.
+        """
+        return await asyncio.to_thread(
+            self._fetch_page_with_interception_sync, url
+        )
 
     async def _download_assets(
         self, page, base_url: str
@@ -140,9 +240,8 @@ class ScraplingCloner:
                 try:
                     response = await client.get(absolute_url)
                     response.raise_for_status()
-                    parsed = urlparse(absolute_url)
-                    extention = Path(parsed.path).suffix or ""
-                    filename = secrets.token_hex(8) + extention
+                    extension = _safe_extension(absolute_url)
+                    filename = secrets.token_hex(8) + extension
                     assets_bytes[filename] = response.content
                     url_to_local[absolute_url] = f"assets/{filename}"
                     raw_to_local[raw_value] = f"assets/{filename}"
@@ -200,13 +299,17 @@ class ScraplingCloner:
                 try:
                     response = await client.get(absolute)
                     response.raise_for_status()
-                    extension = Path(urlparse(absolute).path).suffix or ''
+                    extension = _safe_extension(absolute)
                     filename = secrets.token_hex(8) + extension
                     while filename in assets_bytes:
                         filename = secrets.token_hex(8) + extension
                     assets_bytes[filename] = response.content
                     local_path = f'assets/{filename}'
                     url_to_local[absolute] = local_path
+                    # Also store without query string as fallback
+                    clean_url = absolute.split('?')[0]
+                    if clean_url != absolute:
+                        url_to_local[clean_url] = local_path
                     text = text.replace(match.group(0), f"url('{local_path}')")
                     logger.debug("Downloaded CSS asset: %s", absolute)
                 except Exception:
@@ -237,16 +340,165 @@ class ScraplingCloner:
 
         return html
 
-    def _extract_forms(self, page) -> list[FormData]:
+    def _inline_css(
+        self,
+        html: str,
+        assets_bytes: dict[str, bytes],
+        url_to_local: dict[str, str],
+    ) -> str:
+        """
+        Replace <link rel="stylesheet"> tags with inline <style> blocks.
+        Also embeds fonts and images referenced inside CSS as base64 data URIs.
+        """
+        import re
+        import base64
+
+        # Build reverse map: local_path -> bytes
+        local_to_bytes: dict[str, bytes] = {}
+        for _asset_url, local_path in url_to_local.items():
+            filename = local_path.replace('assets/', '')
+            if filename in assets_bytes:
+                local_to_bytes[local_path] = assets_bytes[filename]
+
+        link_pattern = re.compile(
+            r'<link[^>]+rel=["\']stylesheet["\'][^>]*href=["\']([^"\']+)["\'][^>]*/?>',
+            re.IGNORECASE
+        )
+
+        def replace_link(match):
+            href = match.group(1)
+            css_bytes = local_to_bytes.get(href)
+            if not css_bytes:
+                return match.group(0)
+
+            try:
+                css_text = css_bytes.decode('utf-8', errors='ignore')
+
+                # Match any url() reference, not just assets/ prefixed ones
+                font_pattern = re.compile(r'url\(["\']?([^)"\']+)["\']?\)')
+
+                mime_map = {
+                    '.woff': 'font/woff',
+                    '.woff2': 'font/woff2',
+                    '.ttf': 'font/truetype',
+                    '.eot': 'application/vnd.ms-fontobject',
+                    '.otf': 'font/opentype',
+                    '.png': 'image/png',
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.gif': 'image/gif',
+                    '.svg': 'image/svg+xml',
+                }
+
+                def embed_asset(font_match):
+                    inner_path = font_match.group(1)
+
+                    # Skip data URIs and anchor references
+                    if inner_path.startswith('data:') or inner_path.startswith('#'):
+                        return font_match.group(0)
+
+                    asset_filename = None
+                    asset_bytes_data = None
+
+                    if inner_path.startswith('assets/'):
+                        asset_filename = inner_path[len('assets/'):]
+                        asset_bytes_data = assets_bytes.get(asset_filename)
+
+                    # Fallback: match via url_to_local by URL suffix or basename
+                    if asset_bytes_data is None:
+                        inner_basename = inner_path.split('/')[-1].split('?')[0]
+                        for orig_url, local_path in url_to_local.items():
+                            if inner_path in orig_url or (
+                                inner_basename and orig_url.endswith(inner_basename)
+                            ):
+                                fn = local_path.replace('assets/', '')
+                                b = assets_bytes.get(fn)
+                                if b:
+                                    asset_filename = fn
+                                    asset_bytes_data = b
+                                    break
+
+                    if not asset_bytes_data:
+                        return font_match.group(0)
+
+                    ext = Path(asset_filename).suffix.lower()
+                    mime = mime_map.get(ext, 'application/octet-stream')
+                    b64 = base64.b64encode(asset_bytes_data).decode('ascii')
+                    return f"url('data:{mime};base64,{b64}')"
+
+                css_text = font_pattern.sub(embed_asset, css_text)
+                return f'<style>\n{css_text}\n</style>'
+
+            except Exception as exc:
+                logger.warning("Could not inline CSS %s: %s", href, exc)
+                return match.group(0)
+
+        return link_pattern.sub(replace_link, html)
+
+    def _fix_viewport(self, html: str) -> str:
+        """
+        Ensure the cloned page has a correct viewport meta tag.
+        If one exists, leave it alone.
+        If one is missing, inject the standard responsive viewport tag.
+        If one exists but uses a fixed width, replace it with responsive.
+        """
+        import re
+
+        viewport_pattern = re.compile(
+            r'<meta[^>]+name=["\']viewport["\'][^>]*/?>',
+            re.IGNORECASE
+        )
+
+        correct_viewport = (
+            '<meta name="viewport" '
+            'content="width=device-width, initial-scale=1.0">'
+        )
+
+        existing = viewport_pattern.search(html)
+
+        if not existing:
+            # No viewport tag — inject one
+            if '<head>' in html:
+                html = html.replace('<head>', f'<head>\n{correct_viewport}', 1)
+            elif '<HEAD>' in html:
+                html = html.replace('<HEAD>', f'<HEAD>\n{correct_viewport}', 1)
+            logger.debug("Injected missing viewport meta tag")
+            return html
+
+        # Viewport exists — check if it uses a fixed pixel width
+        existing_tag = existing.group(0)
+        content_match = re.search(
+            r'content=["\']([^"\']+)["\']',
+            existing_tag,
+            re.IGNORECASE
+        )
+
+        if content_match:
+            content = content_match.group(1)
+            # If it sets a fixed numeric width (not device-width), replace it
+            if re.search(r'width=\d+', content):
+                html = html.replace(existing_tag, correct_viewport, 1)
+                logger.debug(
+                    "Replaced fixed-width viewport '%s' with responsive",
+                    content
+                )
+
+        return html
+
+    def _extract_forms(self, page, job_id: str) -> list[FormData]:
         forms = []
         for form_el in page.css("form") or []:
-            action = form_el.attrib.get("action", "")
+            original_action = form_el.attrib.get("action", "")
             method = (form_el.attrib.get("method", "get")).upper()
             fields = [
                 inp.attrib.get("name", inp.attrib.get("id", "unnamed"))
                 for inp in (form_el.css("input, select, textarea") or [])
             ]
-            forms.append(FormData(action=action, method=method, fields=fields))
+            forms.append(FormData(
+                action=original_action,
+                method=method,
+                fields=fields,
+            ))
         return forms
 
     def _extract_links(self, page, base_url: str) -> tuple[list[str], list[str]]:
@@ -279,24 +531,86 @@ class ScraplingCloner:
             fetcher_name = await self.auto_select_fetcher(url)
         logger.info("Cloning %s with %s (job_id=%s)", url, fetcher_name, job_id)
 
-        try:
-            page = await asyncio.to_thread(self._fetch_page, url, fetcher_name)
-        except Exception as exc:
-            raise RuntimeError(f"Fetch failed for {url}: {exc}") from exc
+        intercepted_assets: dict[str, bytes] = {}
 
-        html_content = page.html_content if hasattr(page, "html_content") else str(page)
+        if fetcher_name == "DynamicFetcher":
+            try:
+                html_content, intercepted_assets = \
+                    await self._fetch_page_with_interception(url)
+            except Exception as exc:
+                raise RuntimeError(f"Fetch failed for {url}: {exc}") from exc
+            # Build a parse-able page object from the rendered HTML for
+            # forms/links/title extraction and HTML-tag asset discovery
+            page = ScraplingSelector(html_content, url=url)
+        else:
+            try:
+                raw_page = await asyncio.to_thread(self._fetch_page, url, fetcher_name)
+            except Exception as exc:
+                raise RuntimeError(f"Fetch failed for {url}: {exc}") from exc
+            html_content = (
+                raw_page.html_content
+                if hasattr(raw_page, "html_content")
+                else str(raw_page)
+            )
+            page = raw_page
 
         assets_bytes, url_to_local, failed_count, raw_to_local = \
             await self._download_assets(page, url)
+
+        # Process intercepted assets (already downloaded by Playwright)
+        for asset_url, asset_bytes in intercepted_assets.items():
+            extension = _safe_extension(asset_url)
+            filename = secrets.token_hex(8) + extension
+            while filename in assets_bytes:
+                filename = secrets.token_hex(8) + extension
+            assets_bytes[filename] = asset_bytes
+            url_to_local[asset_url] = f'assets/{filename}'
+            parsed = urlparse(asset_url)
+            raw_path = parsed.path
+            if raw_path and raw_path not in url_to_local:
+                url_to_local[raw_path] = f'assets/{filename}'
+                raw_to_local[raw_path] = f'assets/{filename}'
 
         rewritten_html = self._rewrite_html(
             html_content, url_to_local, raw_to_local, url
         )
 
-        forms = self._extract_forms(page)
+        # Inline CSS and embed fonts for maximum fidelity
+        rewritten_html = self._inline_css(rewritten_html, assets_bytes, url_to_local)
+
+        # Fix viewport to prevent zoom differences vs original
+        rewritten_html = self._fix_viewport(rewritten_html)
+
+        # Rewrite all form actions to point to capture endpoint
+        capture_url = f"http://localhost:8000/capture/{job_id}"
+
+        def rewrite_form_action(match):
+            return match.group(0).replace(match.group(1), capture_url)
+
+        rewritten_html = re.sub(
+            r'<form[^>]+action=["\']([^"\']*)["\']',
+            rewrite_form_action,
+            rewritten_html,
+            flags=re.IGNORECASE,
+        )
+
+        rewritten_html = re.sub(
+            r'<form(?![^>]*action=)([^>]*)>',
+            f'<form action="{capture_url}"\\1>',
+            rewritten_html,
+            flags=re.IGNORECASE,
+        )
+
+        rewritten_html = re.sub(
+            r'(<form[^>]+)method=["\']get["\']',
+            r'\1method="POST"',
+            rewritten_html,
+            flags=re.IGNORECASE,
+        )
+
+        forms = self._extract_forms(page, job_id)
         links_internal, links_external = self._extract_links(page, url)
 
-        # ── Fix: safely extract page title ───────────────────────────────────
         title_el = page.find("title")
         page_title = title_el.text if title_el else ""
 

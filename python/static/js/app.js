@@ -2,6 +2,74 @@
 
 let currentJobId = null;
 
+/* ── Submissions (inline onclick — no addEventListener needed) ── */
+
+function handleSubmissionsClick() {
+  var btn = document.getElementById('viewSubmissionsBtn');
+  if (!btn || btn.getAttribute('data-enabled') !== 'true') return;
+
+  var modal   = document.getElementById('submissionsModal');
+  var content = document.getElementById('submissionsContent');
+
+  if (!modal || !content) {
+    alert('Modal not found');
+    return;
+  }
+
+  content.textContent = 'Loading...';
+  modal.style.display = 'block';
+
+  var jobId = window.currentJobId;
+  if (!jobId) {
+    content.textContent = 'No job ID found.';
+    return;
+  }
+
+  fetch('/submissions/' + jobId)
+    .then(function(r) { return r.json(); })
+    .then(function(submissions) {
+      if (!submissions || submissions.length === 0) {
+        content.textContent = 'No submissions captured yet.\n\nGo to the cloned page and submit the form first.';
+        return;
+      }
+
+      var output = 'Captured Submissions (' + submissions.length + ')\n';
+      output += '-'.repeat(50) + '\n\n';
+
+      submissions.forEach(function(sub, index) {
+        output += 'Submission ' + (index + 1) + '\n';
+        output += 'Time:    ' + sub.captured_at + '\n';
+        output += 'IP:      ' + sub.ip_address + '\n';
+        output += 'Fields:\n';
+
+        var skip = [
+          'authenticity_token', 'csrf_token',
+          '_token', 'commit', 'utf8',
+          'user_token', 'submit',
+        ];
+
+        var fields = sub.fields || {};
+        Object.keys(fields).forEach(function(key) {
+          if (skip.indexOf(key.toLowerCase()) === -1) {
+            output += '  ' + key + ': ' + fields[key] + '\n';
+          }
+        });
+
+        output += '\n' + '-'.repeat(50) + '\n\n';
+      });
+
+      content.textContent = output;
+    })
+    .catch(function(err) {
+      content.textContent = 'Error: ' + err.message;
+    });
+}
+
+function closeSubmissionsModal() {
+  var modal = document.getElementById('submissionsModal');
+  if (modal) modal.style.display = 'none';
+}
+
 /* ── DOM refs ───────────────────────────────── */
 
 const urlInput      = document.getElementById('urlInput');
@@ -105,6 +173,7 @@ async function analyze() {
   }
 
   currentJobId = null;
+  window.currentJobId = currentJobId;
   exportPdfBtn.disabled = true;
   viewCloneBtn.disabled = true;
   clearBtn.style.display = 'none';
@@ -133,6 +202,7 @@ async function analyze() {
 
     const cloneData = await cloneRes.json();
     currentJobId = cloneData.job_id;
+    window.currentJobId = currentJobId;
 
     /* Step 2 — report */
     setLoadingStep('→ Running AI analysis...');
@@ -228,6 +298,13 @@ function renderReport(report) {
   /* Enable action buttons */
   exportPdfBtn.disabled = false;
   viewCloneBtn.disabled = false;
+
+  var subBtn = document.getElementById('viewSubmissionsBtn');
+  if (subBtn) {
+    subBtn.style.opacity = '1';
+    subBtn.style.cursor = 'pointer';
+    subBtn.setAttribute('data-enabled', 'true');
+  }
 }
 
 /* ── Export PDF ─────────────────────────────── */
@@ -271,9 +348,16 @@ viewCloneBtn.addEventListener('click', viewClone);
 
 function clearAll() {
   currentJobId = null;
+  window.currentJobId = currentJobId;
   urlInput.value = '';
   exportPdfBtn.disabled = true;
   viewCloneBtn.disabled = true;
+  var subBtn2 = document.getElementById('viewSubmissionsBtn');
+  if (subBtn2) {
+    subBtn2.style.opacity = '0.4';
+    subBtn2.style.cursor = 'not-allowed';
+    subBtn2.setAttribute('data-enabled', 'false');
+  }
   clearBtn.style.display = 'none';
   analyzeBtn.disabled = false;
 
