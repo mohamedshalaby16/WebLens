@@ -5,12 +5,24 @@ from pydantic import BaseModel
 class CloneRequest(BaseModel):
     url: str
     force_fetcher: str | None = None
+    max_depth: int | None = None
+    max_pages: int | None = None
 
 
 class FormData(BaseModel):
     action: str
     method: str
     fields: list[str]
+
+
+class PageResult(BaseModel):
+    page_id: str
+    url: str
+    html: str
+    page_title: str
+    forms: list[FormData]
+    links_internal: list[str]
+    links_external: list[str]
 
 
 class CloneResult(BaseModel):
@@ -27,7 +39,8 @@ class CloneResult(BaseModel):
     links_external: list[str]
     page_title: str
     timestamp: str
-    
+    pages: list[PageResult] = []
+
     class Config:
         arbitrary_types_allowed = True
 

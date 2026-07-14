@@ -38,12 +38,19 @@ UUID_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+PAGE_ID_REGEX = re.compile(r'^(index|[a-f0-9]{10})$')
+
 limiter = Limiter(key_func=get_remote_address)
 
 
 def validate_job_id(job_id: str) -> None:
     if not UUID_REGEX.match(job_id):
         raise HTTPException(status_code=400, detail="Invalid job ID format.")
+
+
+def validate_page_id(page_id: str) -> None:
+    if not PAGE_ID_REGEX.match(page_id):
+        raise HTTPException(status_code=400, detail="Invalid page ID format.")
 
 
 @asynccontextmanager
@@ -109,6 +116,8 @@ async def clone_url(request: Request, body: CloneRequest) -> dict:
             url=url,
             job_id=job_id,
             force_fetcher=body.force_fetcher,
+            max_depth=body.max_depth,
+            max_pages=body.max_pages,
         )
 
         meta = {
@@ -118,14 +127,18 @@ async def clone_url(request: Request, body: CloneRequest) -> dict:
             "timestamp": clone_result.timestamp,
             "assets_downloaded": clone_result.assets_downloaded,
             "assets_failed": clone_result.assets_failed,
-            "forms_found": len(clone_result.forms),
-            "links_found": len(clone_result.links_internal) + len(clone_result.links_external),
+            "forms_found": sum(len(p.forms) for p in clone_result.pages),
+            "links_found": sum(
+                len(p.links_internal) + len(p.links_external)
+                for p in clone_result.pages
+            ),
             "page_title": clone_result.page_title,
+            "pages_cloned": len(clone_result.pages),
         }
 
         clone_path = await storage.save_clone(
             job_id=job_id,
-            html=clone_result.html,
+            pages=clone_result.pages,
             assets=clone_result.assets_data,
             meta=meta,
         )
@@ -169,6 +182,19 @@ async def get_clone(job_id: str):
     html_bytes = await storage.get_clone_html(job_id)
     if html_bytes is None:
         raise HTTPException(status_code=404, detail="Clone not found")
+    return Response(
+        content=html_bytes,
+        media_type="text/html"
+    )
+
+
+@app.get("/clone/{job_id}/page/{page_id}")
+async def get_clone_page(job_id: str, page_id: str):
+    validate_job_id(job_id)
+    validate_page_id(page_id)
+    html_bytes = await storage.get_clone_html(job_id, page_id=page_id)
+    if html_bytes is None:
+        raise HTTPException(status_code=404, detail="Clone page not found")
     return Response(
         content=html_bytes,
         media_type="text/html"

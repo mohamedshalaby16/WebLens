@@ -115,11 +115,17 @@ class StorageManager:
     async def save_clone(
         self,
         job_id: str,
-        html: str,
+        pages: list,
         assets: dict[str, bytes],
         meta: dict,
     ) -> str:
-        """Save HTML and assets to GridFS. Returns GridFS file_id as str."""
+        """
+        Save every crawled page's HTML plus shared assets to GridFS.
+        `pages` is a list of PageResult (page_id, url, html, ...); the entry
+        page (page_id == "index") is saved as index.html so the existing
+        /clone/{job_id} route keeps working. Returns the entry page's
+        GridFS file_id as str.
+        """
         import motor.motor_asyncio
         from motor.motor_asyncio import AsyncIOMotorGridFSBucket
         client = motor.motor_asyncio.AsyncIOMotorClient(
@@ -141,17 +147,23 @@ class StorageManager:
             upsert=True
         )
 
-        # Save HTML to GridFS
-        html_bytes = html.encode("utf-8")
-        html_file_id = await gridfs.upload_from_stream(
-            "index.html",
-            io.BytesIO(html_bytes),
-            metadata={
-                "job_id": job_id,
-                "type": "html",
-                "content_type": "text/html",
-            }
-        )
+        # Save each crawled page's HTML to GridFS
+        html_file_id = None
+        for page in pages:
+            filename = "index.html" if page.page_id == "index" else f"{page.page_id}.html"
+            file_id = await gridfs.upload_from_stream(
+                filename,
+                io.BytesIO(page.html.encode("utf-8")),
+                metadata={
+                    "job_id": job_id,
+                    "type": "html",
+                    "content_type": "text/html",
+                    "page_id": page.page_id,
+                    "url": page.url,
+                }
+            )
+            if page.page_id == "index":
+                html_file_id = file_id
 
         # Save each asset to GridFS
         asset_file_ids = {}
@@ -179,6 +191,7 @@ class StorageManager:
                 "forms_found": meta.get("forms_found", 0),
                 "links_found": meta.get("links_found", 0),
                 "page_title": meta.get("page_title", ""),
+                "pages_cloned": meta.get("pages_cloned", 1),
                 "html_file_id": str(html_file_id),
                 "asset_file_ids": asset_file_ids,
                 "created_at": now,
@@ -189,10 +202,14 @@ class StorageManager:
         client.close()
         return str(html_file_id)
 
-    async def get_clone_html(self, job_id: str) -> Optional[bytes]:
-        """Retrieve cloned HTML bytes from GridFS."""
+    async def get_clone_html(
+        self, job_id: str, page_id: str = "index"
+    ) -> Optional[bytes]:
+        """Retrieve cloned HTML bytes from GridFS for a given page of the job."""
         import motor.motor_asyncio
         from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+
+        filename = "index.html" if page_id == "index" else f"{page_id}.html"
 
         try:
             client = motor.motor_asyncio.AsyncIOMotorClient(
@@ -201,10 +218,8 @@ class StorageManager:
             db = client.weblens
             gridfs = AsyncIOMotorGridFSBucket(db)
 
-            # Query by job_id and filename=index.html
-            # Using metadata.job_id dot notation
             cursor = gridfs.find(
-                {"metadata.job_id": job_id, "filename": "index.html"}
+                {"metadata.job_id": job_id, "filename": filename}
             )
 
             grid_out = None
@@ -212,7 +227,7 @@ class StorageManager:
                 grid_out = doc
                 break
 
-            if grid_out is None:
+            if grid_out is None and page_id == "index":
                 # Fallback: try finding any html file for this job
                 cursor2 = gridfs.find({"metadata.job_id": job_id})
                 async for doc in cursor2:
@@ -223,7 +238,8 @@ class StorageManager:
 
             if grid_out is None:
                 logger.warning(
-                    "HTML not found in GridFS for job %s", job_id
+                    "HTML not found in GridFS for job %s page %s",
+                    job_id, page_id,
                 )
                 client.close()
                 return None
@@ -234,7 +250,8 @@ class StorageManager:
 
         except Exception as exc:
             logger.error(
-                "get_clone_html failed for job %s: %s", job_id, exc
+                "get_clone_html failed for job %s page %s: %s",
+                job_id, page_id, exc,
             )
             return None
 
