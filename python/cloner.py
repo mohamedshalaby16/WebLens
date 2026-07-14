@@ -358,7 +358,7 @@ class ScraplingCloner:
         # Build reverse map: local_path -> bytes
         local_to_bytes: dict[str, bytes] = {}
         for _asset_url, local_path in url_to_local.items():
-            filename = local_path.replace('assets/', '')
+            filename = local_path.rsplit('/', 1)[-1]
             if filename in assets_bytes:
                 local_to_bytes[local_path] = assets_bytes[filename]
 
@@ -402,8 +402,8 @@ class ScraplingCloner:
                     asset_filename = None
                     asset_bytes_data = None
 
-                    if inner_path.startswith('assets/'):
-                        asset_filename = inner_path[len('assets/'):]
+                    if inner_path.startswith('assets/') or '/clone/assets/' in inner_path:
+                        asset_filename = inner_path.rsplit('/', 1)[-1]
                         asset_bytes_data = assets_bytes.get(asset_filename)
 
                     # Fallback: match via url_to_local by URL suffix or basename
@@ -413,7 +413,7 @@ class ScraplingCloner:
                             if inner_path in orig_url or (
                                 inner_basename and orig_url.endswith(inner_basename)
                             ):
-                                fn = local_path.replace('assets/', '')
+                                fn = local_path.rsplit('/', 1)[-1]
                                 b = assets_bytes.get(fn)
                                 if b:
                                     asset_filename = fn
@@ -566,12 +566,12 @@ class ScraplingCloner:
             while filename in assets_bytes:
                 filename = secrets.token_hex(8) + extension
             assets_bytes[filename] = asset_bytes
-            url_to_local[asset_url] = f'assets/{filename}'
+            url_to_local[asset_url] = f'/clone/assets/{job_id}/{filename}'
             parsed = urlparse(asset_url)
             raw_path = parsed.path
             if raw_path and raw_path not in url_to_local:
-                url_to_local[raw_path] = f'assets/{filename}'
-                raw_to_local[raw_path] = f'assets/{filename}'
+                url_to_local[raw_path] = f'/clone/assets/{job_id}/{filename}'
+                raw_to_local[raw_path] = f'/clone/assets/{job_id}/{filename}'
 
         rewritten_html = self._rewrite_html(
             html_content, url_to_local, raw_to_local, url

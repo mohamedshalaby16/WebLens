@@ -209,7 +209,7 @@ async def capture_submission(request: Request, job_id: str) -> HTMLResponse:
             "user_agent": request.headers.get("user-agent", ""),
             "referer": request.headers.get("referer", ""),
         }
-        storage.save_submission(job_id, submission)
+        await storage.save_submission(job_id, submission)
         logger.info(
             "Captured submission for job %s: %s fields",
             job_id,
@@ -225,7 +225,7 @@ async def capture_submission(request: Request, job_id: str) -> HTMLResponse:
 async def get_submissions(job_id: str) -> list:
     """Get all captured form submissions for a job."""
     validate_job_id(job_id)
-    return storage.get_submissions(job_id)
+    return await storage.get_submissions(job_id)
 
 @app.get("/report/{job_id}/pdf")
 async def get_report_pdf(job_id: str) -> Response:
