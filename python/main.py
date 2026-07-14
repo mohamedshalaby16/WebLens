@@ -16,6 +16,8 @@ from starlette.requests import Request
 
 from analyzer import SKAnalyzer
 from cloner import ScraplingCloner
+from database import connect_db, disconnect_db, connect_sync_db, disconnect_sync_db, create_indexes
+from fastapi.responses import Response, StreamingResponse
 from models import CloneRequest, JobStatus, WebLensReport
 from storage import StorageManager
 
@@ -47,7 +49,13 @@ def validate_job_id(job_id: str) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("WebLens API starting up")
+    connect_sync_db()
+    await connect_db()
+    await create_indexes()
+    logger.info("Database ready")
     yield
+    await disconnect_db()
+    disconnect_sync_db()
     logger.info("WebLens API shutting down")
 
 
@@ -61,7 +69,6 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-app.mount("/clones", StaticFiles(directory="output/clones"), name="clones")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
@@ -106,11 +113,14 @@ async def clone_url(request: Request, body: CloneRequest) -> dict:
 
         meta = {
             "job_id": job_id,
-            "url": url,
+            "url": body.url,
             "fetcher_used": clone_result.fetcher_used,
             "timestamp": clone_result.timestamp,
             "assets_downloaded": clone_result.assets_downloaded,
             "assets_failed": clone_result.assets_failed,
+            "forms_found": len(clone_result.forms),
+            "links_found": len(clone_result.links_internal) + len(clone_result.links_external),
+            "page_title": clone_result.page_title,
         }
 
         clone_path = await storage.save_clone(
@@ -156,10 +166,23 @@ async def get_report(job_id: str) -> WebLensReport:
 @app.get("/clone/{job_id}")
 async def get_clone(job_id: str):
     validate_job_id(job_id)
-    clone_path = storage.get_clone_path(job_id)
-    if clone_path is None:
+    html_bytes = await storage.get_clone_html(job_id)
+    if html_bytes is None:
         raise HTTPException(status_code=404, detail="Clone not found")
-    return RedirectResponse(url=f"/clones/{job_id}/index.html")
+    return Response(
+        content=html_bytes,
+        media_type="text/html"
+    )
+
+
+@app.get("/clone/assets/{job_id}/{filename}")
+async def get_clone_asset(job_id: str, filename: str):
+    validate_job_id(job_id)
+    result = await storage.get_asset(job_id, filename)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    content, content_type = result
+    return Response(content=content, media_type=content_type)
 
 
 @app.get("/jobs", response_model=list[JobStatus])

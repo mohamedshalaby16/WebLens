@@ -212,8 +212,8 @@ class ScraplingCloner:
         )
 
     async def _download_assets(
-        self, page, base_url: str
-    ) -> tuple[dict[str, bytes], dict[str, str], int]:
+        self, page, base_url: str, job_id: str
+    ) -> tuple[dict[str, bytes], dict[str, str], dict[str, str], int]:
         """
         Download all assets.
         Returns: assets_bytes, url_to_local mapping, failed_count
@@ -243,8 +243,8 @@ class ScraplingCloner:
                     extension = _safe_extension(absolute_url)
                     filename = secrets.token_hex(8) + extension
                     assets_bytes[filename] = response.content
-                    url_to_local[absolute_url] = f"assets/{filename}"
-                    raw_to_local[raw_value] = f"assets/{filename}"
+                    url_to_local[absolute_url] = f"/clone/assets/{job_id}/{filename}"
+                    raw_to_local[raw_value] = f"/clone/assets/{job_id}/{filename}"
                     logger.debug("Downloaded asset: %s", absolute_url)
 
                     if filename.endswith('.css'):
@@ -255,6 +255,7 @@ class ScraplingCloner:
                             url_to_local=url_to_local,
                             client=client,
                             seen=seen,
+                            job_id=job_id,
                         )
                         assets_bytes[filename] = processed
 
@@ -262,7 +263,7 @@ class ScraplingCloner:
                     logger.warning("Failed to download asset: %s", absolute_url)
                     failed_count += 1
 
-        return assets_bytes, url_to_local, failed_count, raw_to_local
+        return assets_bytes, url_to_local, raw_to_local, failed_count
 
     async def _process_css_assets(
         self,
@@ -272,6 +273,7 @@ class ScraplingCloner:
         url_to_local: dict[str, str],
         client: httpx.AsyncClient,
         seen: set[str],
+        job_id: str,
     ) -> bytes:
         import re
         try:
@@ -304,7 +306,7 @@ class ScraplingCloner:
                     while filename in assets_bytes:
                         filename = secrets.token_hex(8) + extension
                     assets_bytes[filename] = response.content
-                    local_path = f'assets/{filename}'
+                    local_path = f'/clone/assets/{job_id}/{filename}'
                     url_to_local[absolute] = local_path
                     # Also store without query string as fallback
                     clean_url = absolute.split('?')[0]
@@ -554,8 +556,8 @@ class ScraplingCloner:
             )
             page = raw_page
 
-        assets_bytes, url_to_local, failed_count, raw_to_local = \
-            await self._download_assets(page, url)
+        assets_bytes, url_to_local, raw_to_local, failed_count = \
+            await self._download_assets(page, url, job_id)
 
         # Process intercepted assets (already downloaded by Playwright)
         for asset_url, asset_bytes in intercepted_assets.items():
