@@ -1,3 +1,31 @@
+/* ── Auth ───────────────────────────────────── */
+
+function getAuthHeaders() {
+    const token = localStorage.getItem('weblens_token');
+    return {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token,
+    };
+}
+
+function logout() {
+    localStorage.removeItem('weblens_token');
+    localStorage.removeItem('weblens_user');
+    window.location.href = '/login';
+}
+
+(function displayCurrentUser() {
+  const user = JSON.parse(localStorage.getItem('weblens_user') || '{}');
+  const usernameEl = document.getElementById('currentUsername');
+  if (usernameEl && user.username) {
+      usernameEl.textContent = user.username;
+  }
+  const roleBadge = document.getElementById('roleBadge');
+  if (roleBadge && user.role) {
+      roleBadge.textContent = user.role.toUpperCase();
+  }
+})();
+
 /* ── State ──────────────────────────────────── */
 
 let currentJobId = null;
@@ -25,8 +53,16 @@ function handleSubmissionsClick() {
     return;
   }
 
-  fetch('/submissions/' + jobId)
-    .then(function(r) { return r.json(); })
+  fetch('/submissions/' + jobId, {
+      headers: { 'Authorization': 'Bearer ' + localStorage.getItem('weblens_token') },
+    })
+    .then(function(r) {
+      if (r.status === 401) {
+        logout();
+        return;
+      }
+      return r.json();
+    })
     .then(function(submissions) {
       if (!submissions || submissions.length === 0) {
         content.textContent = 'No submissions captured yet.\n\nGo to the cloned page and submit the form first.';
@@ -141,7 +177,9 @@ function showPanel(name) {
 
 async function checkHealth() {
   try {
-    const res = await fetch('/health');
+    const res = await fetch('/health', {
+      headers: { 'Authorization': 'Bearer ' + localStorage.getItem('weblens_token') },
+    });
     if (res.ok) {
       statusDot.className     = 'status-dot online';
       statusLabel.textContent = 'online';
@@ -188,12 +226,17 @@ async function analyze() {
     const fetcherValue = document.getElementById('fetcherSelect').value;
     const cloneRes = await fetch('/clone', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({
         url,
         force_fetcher: fetcherValue === 'Auto' ? null : fetcherValue,
       }),
     });
+
+    if (cloneRes.status === 401) {
+      logout();
+      return;
+    }
 
     if (!cloneRes.ok) {
       const err = await cloneRes.json().catch(() => ({ detail: 'Clone failed' }));
@@ -208,7 +251,15 @@ async function analyze() {
     setLoadingStep('→ Running AI analysis...');
     setStatus('Fetching report for job ' + currentJobId);
 
-    const reportRes = await fetch('/report/' + currentJobId);
+    const reportRes = await fetch('/report/' + currentJobId, {
+      headers: { 'Authorization': 'Bearer ' + localStorage.getItem('weblens_token') },
+    });
+
+    if (reportRes.status === 401) {
+      logout();
+      return;
+    }
+
     if (!reportRes.ok) {
       const err = await reportRes.json().catch(() => ({ detail: 'Report not found' }));
       throw new Error(err.detail || 'Could not retrieve report');
@@ -295,6 +346,47 @@ function renderReport(report) {
   /* Assessment */
   document.getElementById('assessmentText').textContent = risk.explanation || '—';
 
+  /* Security Recommendations */
+  const rec = report.recommendations;
+  const recCard = document.getElementById('recommendationsCard');
+  if (rec && recCard) {
+      recCard.style.display = 'block';
+
+      // Priority badge
+      const badge = document.getElementById('recPriorityBadge');
+      const priorityColors = {
+          'Low':      {bg: '#f0fdf4', color: '#166534'},
+          'Medium':   {bg: '#fff7ed', color: '#b45309'},
+          'High':     {bg: '#fef2f2', color: '#b91c1c'},
+          'Critical': {bg: '#fef2f2', color: '#7f1d1d'},
+      };
+      const pc = priorityColors[rec.priority] ||
+                 {bg: '#dbeafe', color: '#1e3a8a'};
+      badge.style.background = pc.bg;
+      badge.style.color = pc.color;
+      badge.textContent = 'Action Priority: ' +
+                          rec.priority.toUpperCase();
+
+      // Populate lists
+      function fillList(listId, items) {
+          const ul = document.getElementById(listId);
+          if (!ul) return;
+          ul.innerHTML = '';
+          (items || []).forEach(function(item) {
+              const li = document.createElement('li');
+              li.textContent = item;
+              li.style.marginBottom = '4px';
+              ul.appendChild(li);
+          });
+      }
+
+      fillList('antiCloningList', rec.anti_cloning);
+      fillList('phishingProtectionList', rec.phishing_protection);
+      fillList('hardeningList', rec.general_hardening);
+  } else if (recCard) {
+      recCard.style.display = 'none';
+  }
+
   /* Enable action buttons */
   exportPdfBtn.disabled = false;
   viewCloneBtn.disabled = false;
@@ -314,7 +406,15 @@ async function exportPdf() {
   setStatus('Downloading PDF report...');
 
   try {
-    const res = await fetch('/report/' + currentJobId + '/pdf');
+    const res = await fetch('/report/' + currentJobId + '/pdf', {
+      headers: { 'Authorization': 'Bearer ' + localStorage.getItem('weblens_token') },
+    });
+
+    if (res.status === 401) {
+      logout();
+      return;
+    }
+
     if (!res.ok) throw new Error('PDF generation failed');
 
     const blob     = await res.blob();

@@ -1,6 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script>
+    // Redirect to login if not authenticated
+    const token = localStorage.getItem('weblens_token');
+    const user = JSON.parse(localStorage.getItem('weblens_user') || 'null');
+    if (!token || !user) {
+        window.location.href = '/login';
+    }
+    // Redirect admin to admin dashboard
+    if (user && user.role === 'admin') {
+        // Admin can also use the main app
+        // Just show their username in header
+    }
+  </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WebLens</title>
@@ -17,6 +30,11 @@
       <div class="status-group" id="statusGroup" title="Click to refresh">
         <span class="status-dot" id="statusDot"></span>
         <span class="status-label" id="statusLabel">checking</span>
+      </div>
+      <div class="user-info" id="userInfo" style="display:flex; align-items:center; gap:10px;">
+        <span id="welcomeMsg" style="color:#a0a0a0; font-size:13px;">Welcome, <span id="currentUsername">--</span></span>
+        <span id="roleBadge" style="background:#2a2a2a; color:#e8ff47; font-size:11px; font-weight:700; padding:3px 8px; border-radius:4px; letter-spacing:0.5px;">--</span>
+        <button id="logoutBtn" onclick="logout()" style="background:transparent; border:1px solid #2a2a2a; color:#a0a0a0; cursor:pointer; padding:6px 12px; font-size:13px; border-radius:4px;">Logout</button>
       </div>
     </div>
   </header>
@@ -147,6 +165,58 @@
       <div class="assessment-card">
         <p class="card-title">Assessment</p>
         <p class="assessment-text" id="assessmentText">--</p>
+      </div>
+
+      <!-- Security Recommendations -->
+      <div id="recommendationsCard" class="card"
+           style="display:none;">
+          <div class="card-title">SECURITY RECOMMENDATIONS</div>
+
+          <div id="recPriorityBadge"
+               style="margin-bottom:16px; padding:8px 12px;
+                      border-radius:4px; font-size:12px;
+                      font-weight:bold; display:inline-block;">
+          </div>
+
+          <div id="antiCloningSection" style="margin-bottom:16px;">
+              <div style="font-size:11px; font-weight:bold;
+                          color:#2563eb; margin-bottom:8px;
+                          text-transform:uppercase;">
+                  Anti-Cloning Measures
+              </div>
+              <ul id="antiCloningList"
+                  style="margin:0; padding-left:20px;
+                         color:#a0a0a0; font-size:11px;
+                         line-height:1.8;">
+              </ul>
+          </div>
+
+          <div id="phishingProtectionSection"
+               style="margin-bottom:16px;">
+              <div style="font-size:11px; font-weight:bold;
+                          color:#dc2626; margin-bottom:8px;
+                          text-transform:uppercase;">
+                  Phishing Protection
+              </div>
+              <ul id="phishingProtectionList"
+                  style="margin:0; padding-left:20px;
+                         color:#a0a0a0; font-size:11px;
+                         line-height:1.8;">
+              </ul>
+          </div>
+
+          <div id="hardeningSection">
+              <div style="font-size:11px; font-weight:bold;
+                          color:#0d9488; margin-bottom:8px;
+                          text-transform:uppercase;">
+                  General Security Hardening
+              </div>
+              <ul id="hardeningList"
+                  style="margin:0; padding-left:20px;
+                         color:#a0a0a0; font-size:11px;
+                         line-height:1.8;">
+              </ul>
+          </div>
       </div>
 
       <!-- Actions -->

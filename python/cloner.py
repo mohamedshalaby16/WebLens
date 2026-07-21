@@ -1,10 +1,12 @@
 import asyncio
+import hashlib
 import ipaddress
 import logging
 import re
 import secrets
 import socket
 import threading
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -15,9 +17,31 @@ from playwright.sync_api import sync_playwright
 from scrapling import Selector as ScraplingSelector
 from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
 
-from models import CloneResult, FormData
+from models import CloneResult, FormData, PageResult
 
 logger = logging.getLogger(__name__)
+
+# Crawl bounds — a clone job walks internal links breadth-first up to these
+# limits so cloning a site can't turn into an unbounded scrape of the target.
+DEFAULT_MAX_DEPTH = 2
+DEFAULT_MAX_PAGES = 20
+HARD_MAX_DEPTH = 4
+HARD_MAX_PAGES = 50
+
+ENTRY_PAGE_ID = "index"
+
+
+def _normalize_url(url: str) -> str:
+    """
+    Normalize a URL for crawl de-duplication: drop query string and
+    fragment, and strip a trailing slash, so query-string variants of the
+    same path aren't treated as distinct pages.
+    """
+    parsed = urlparse(url)
+    path = parsed.path or "/"
+    if len(path) > 1 and path.endswith("/"):
+        path = path.rstrip("/")
+    return f"{parsed.scheme}://{parsed.netloc.lower()}{path}"
 
 
 def is_safe_url(url: str) -> bool:
@@ -212,16 +236,29 @@ class ScraplingCloner:
         )
 
     async def _download_assets(
-        self, page, base_url: str, job_id: str
+        self,
+        page,
+        base_url: str,
+        job_id: str,
+        assets_bytes: dict[str, bytes] | None = None,
+        url_to_local: dict[str, str] | None = None,
+        raw_to_local: dict[str, str] | None = None,
+        seen: set[str] | None = None,
     ) -> tuple[dict[str, bytes], dict[str, str], dict[str, str], int]:
         """
-        Download all assets.
-        Returns: assets_bytes, url_to_local mapping, failed_count
+        Download all assets referenced by a page. Shared dicts/set may be
+        passed in so multiple pages of the same crawl reuse already
+        downloaded assets instead of re-fetching them.
+        Returns: assets_bytes, url_to_local, raw_to_local, failed_count
         """
-        assets_bytes: dict[str, bytes] = {}
-        url_to_local: dict[str, str] = {}
-        raw_to_local: dict[str, str] = {}
-        seen: set[str] = set()
+        if assets_bytes is None:
+            assets_bytes = {}
+        if url_to_local is None:
+            url_to_local = {}
+        if raw_to_local is None:
+            raw_to_local = {}
+        if seen is None:
+            seen = set()
         failed_count: int = 0
 
         urls_to_fetch: list[tuple[str, str]] = []
@@ -234,6 +271,8 @@ class ScraplingCloner:
                 if absolute not in seen:
                     seen.add(absolute)
                     urls_to_fetch.append((absolute, raw))
+                elif absolute in url_to_local:
+                    raw_to_local[raw] = url_to_local[absolute]
 
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             for absolute_url, raw_value in urls_to_fetch:
@@ -517,8 +556,51 @@ class ScraplingCloner:
                 external.append(absolute)
         return internal, external
 
+    def _extract_anchor_map(self, page, base_url: str) -> dict[str, str]:
+        """
+        Map each internal-link raw href (as authored) to its absolute URL,
+        so the crawler can rewrite that exact href in the page's own HTML.
+        """
+        base_domain = urlparse(base_url).netloc
+        anchors: dict[str, str] = {}
+        for a in page.css("a") or []:
+            href = a.attrib.get("href", "").strip()
+            if not href or href.startswith("#") or href.startswith("javascript:"):
+                continue
+            absolute = urljoin(base_url, href)
+            if urlparse(absolute).netloc == base_domain:
+                anchors[href] = absolute
+        return anchors
+
+    async def _fetch_one(
+        self, url: str, fetcher_name: str
+    ) -> tuple[str, object, dict[str, bytes]]:
+        """
+        Fetch a single page. Returns (html_content, page_selector, intercepted_assets).
+        """
+        if fetcher_name == "DynamicFetcher":
+            html_content, intercepted_assets = \
+                await self._fetch_page_with_interception(url)
+            # Build a parse-able page object from the rendered HTML for
+            # forms/links/title extraction and HTML-tag asset discovery
+            page = ScraplingSelector(html_content, url=url)
+            return html_content, page, intercepted_assets
+
+        raw_page = await asyncio.to_thread(self._fetch_page, url, fetcher_name)
+        html_content = (
+            raw_page.html_content
+            if hasattr(raw_page, "html_content")
+            else str(raw_page)
+        )
+        return html_content, raw_page, {}
+
     async def clone(
-        self, url: str, job_id: str, force_fetcher: str | None = None
+        self,
+        url: str,
+        job_id: str,
+        force_fetcher: str | None = None,
+        max_depth: int | None = None,
+        max_pages: int | None = None,
     ) -> CloneResult:
         if not is_safe_url(url):
             raise ValueError(
@@ -527,107 +609,193 @@ class ScraplingCloner:
                 "Internal, private, and loopback addresses are blocked."
             )
 
-        if force_fetcher and force_fetcher != "Auto":
-            fetcher_name = force_fetcher
-        else:
-            fetcher_name = await self.auto_select_fetcher(url)
-        logger.info("Cloning %s with %s (job_id=%s)", url, fetcher_name, job_id)
+        depth_limit = min(max_depth, HARD_MAX_DEPTH) if max_depth else DEFAULT_MAX_DEPTH
+        pages_limit = min(max_pages, HARD_MAX_PAGES) if max_pages else DEFAULT_MAX_PAGES
+        depth_limit = max(0, depth_limit)
+        pages_limit = max(1, pages_limit)
 
-        intercepted_assets: dict[str, bytes] = {}
+        entry_normalized = _normalize_url(url)
 
-        if fetcher_name == "DynamicFetcher":
-            try:
-                html_content, intercepted_assets = \
-                    await self._fetch_page_with_interception(url)
-            except Exception as exc:
-                raise RuntimeError(f"Fetch failed for {url}: {exc}") from exc
-            # Build a parse-able page object from the rendered HTML for
-            # forms/links/title extraction and HTML-tag asset discovery
-            page = ScraplingSelector(html_content, url=url)
-        else:
-            try:
-                raw_page = await asyncio.to_thread(self._fetch_page, url, fetcher_name)
-            except Exception as exc:
-                raise RuntimeError(f"Fetch failed for {url}: {exc}") from exc
-            html_content = (
-                raw_page.html_content
-                if hasattr(raw_page, "html_content")
-                else str(raw_page)
+        # ── Phase 1: breadth-first crawl of internal links ──────────────────
+        visited: dict[str, str] = {}  # normalized_url -> page_id
+        crawled: dict[str, dict] = {}  # normalized_url -> raw page data
+        queue: deque[tuple[str, int]] = deque([(url, 0)])
+
+        while queue and len(crawled) < pages_limit:
+            current_url, depth = queue.popleft()
+            norm = _normalize_url(current_url)
+            if norm in visited:
+                continue
+            if not is_safe_url(current_url):
+                continue
+
+            if force_fetcher and force_fetcher != "Auto":
+                fetcher_name = force_fetcher
+            else:
+                fetcher_name = await self.auto_select_fetcher(current_url)
+            logger.info(
+                "Cloning %s with %s (job_id=%s, depth=%d)",
+                current_url, fetcher_name, job_id, depth,
             )
-            page = raw_page
 
-        assets_bytes, url_to_local, raw_to_local, failed_count = \
-            await self._download_assets(page, url, job_id)
+            try:
+                html_content, page, intercepted_assets = \
+                    await self._fetch_one(current_url, fetcher_name)
+            except Exception as exc:
+                if norm == entry_normalized:
+                    raise RuntimeError(f"Fetch failed for {url}: {exc}") from exc
+                logger.warning("Fetch failed for %s: %s", current_url, exc)
+                continue
 
-        # Process intercepted assets (already downloaded by Playwright)
-        for asset_url, asset_bytes in intercepted_assets.items():
-            extension = _safe_extension(asset_url)
-            filename = secrets.token_hex(8) + extension
-            while filename in assets_bytes:
+            page_id = (
+                ENTRY_PAGE_ID if norm == entry_normalized
+                else hashlib.sha1(norm.encode()).hexdigest()[:10]
+            )
+            visited[norm] = page_id
+
+            anchors = self._extract_anchor_map(page, current_url)
+            forms = self._extract_forms(page, job_id)
+            links_internal, links_external = self._extract_links(page, current_url)
+            title_el = page.find("title")
+            page_title = title_el.text if title_el else ""
+
+            crawled[norm] = {
+                "url": current_url,
+                "page_id": page_id,
+                "html": html_content,
+                "page": page,
+                "intercepted_assets": intercepted_assets,
+                "anchors": anchors,
+                "forms": forms,
+                "links_internal": links_internal,
+                "links_external": links_external,
+                "page_title": page_title,
+                "fetcher_used": fetcher_name,
+            }
+
+            if depth < depth_limit:
+                for absolute in anchors.values():
+                    child_norm = _normalize_url(absolute)
+                    if child_norm not in visited and len(crawled) + len(queue) < pages_limit:
+                        queue.append((absolute, depth + 1))
+
+        # ── Phase 2: download assets, shared/deduped across all pages ───────
+        assets_bytes: dict[str, bytes] = {}
+        url_to_local: dict[str, str] = {}
+        raw_to_local: dict[str, str] = {}
+        seen: set[str] = set()
+        total_failed = 0
+
+        for data in crawled.values():
+            assets_bytes, url_to_local, raw_to_local, failed_count = \
+                await self._download_assets(
+                    data["page"], data["url"], job_id,
+                    assets_bytes=assets_bytes, url_to_local=url_to_local,
+                    raw_to_local=raw_to_local, seen=seen,
+                )
+            total_failed += failed_count
+
+            for asset_url, asset_bytes in data["intercepted_assets"].items():
+                if asset_url in url_to_local:
+                    continue
+                extension = _safe_extension(asset_url)
                 filename = secrets.token_hex(8) + extension
-            assets_bytes[filename] = asset_bytes
-            url_to_local[asset_url] = f'/clone/assets/{job_id}/{filename}'
-            parsed = urlparse(asset_url)
-            raw_path = parsed.path
-            if raw_path and raw_path not in url_to_local:
-                url_to_local[raw_path] = f'/clone/assets/{job_id}/{filename}'
-                raw_to_local[raw_path] = f'/clone/assets/{job_id}/{filename}'
+                while filename in assets_bytes:
+                    filename = secrets.token_hex(8) + extension
+                assets_bytes[filename] = asset_bytes
+                local_path = f'/clone/assets/{job_id}/{filename}'
+                url_to_local[asset_url] = local_path
+                seen.add(asset_url)
+                parsed = urlparse(asset_url)
+                if parsed.path and parsed.path not in url_to_local:
+                    url_to_local[parsed.path] = local_path
+                    raw_to_local[parsed.path] = local_path
 
-        rewritten_html = self._rewrite_html(
-            html_content, url_to_local, raw_to_local, url
-        )
+        # ── Phase 3: rewrite each page's HTML (assets, CSS, forms, links) ───
+        page_routes = {
+            norm: (
+                f"/clone/{job_id}" if data["page_id"] == ENTRY_PAGE_ID
+                else f"/clone/{job_id}/page/{data['page_id']}"
+            )
+            for norm, data in crawled.items()
+        }
 
-        # Inline CSS and embed fonts for maximum fidelity
-        rewritten_html = self._inline_css(rewritten_html, assets_bytes, url_to_local)
-
-        # Fix viewport to prevent zoom differences vs original
-        rewritten_html = self._fix_viewport(rewritten_html)
-
-        # Rewrite all form actions to point to capture endpoint
         capture_url = f"http://localhost:8000/capture/{job_id}"
 
         def rewrite_form_action(match):
             return match.group(0).replace(match.group(1), capture_url)
 
-        rewritten_html = re.sub(
-            r'<form[^>]+action=["\']([^"\']*)["\']',
-            rewrite_form_action,
-            rewritten_html,
-            flags=re.IGNORECASE,
+        def rewrite_page(data: dict) -> str:
+            html = self._rewrite_html(
+                data["html"], url_to_local, raw_to_local, data["url"]
+            )
+            html = self._inline_css(html, assets_bytes, url_to_local)
+            html = self._fix_viewport(html)
+
+            html = re.sub(
+                r'<form[^>]+action=["\']([^"\']*)["\']',
+                rewrite_form_action,
+                html,
+                flags=re.IGNORECASE,
+            )
+            html = re.sub(
+                r'<form(?![^>]*action=)([^>]*)>',
+                f'<form action="{capture_url}"\\1>',
+                html,
+                flags=re.IGNORECASE,
+            )
+            html = re.sub(
+                r'(<form[^>]+)method=["\']get["\']',
+                r'\1method="POST"',
+                html,
+                flags=re.IGNORECASE,
+            )
+
+            # Point internal links at other cloned pages when we crawled
+            # them; otherwise leave them pointing at the live site.
+            for raw_href, absolute in data["anchors"].items():
+                child_norm = _normalize_url(absolute)
+                target = page_routes.get(child_norm, absolute)
+                if raw_href == target:
+                    continue
+                html = html.replace(f'"{raw_href}"', f'"{target}"')
+                html = html.replace(f"'{raw_href}'", f"'{target}'")
+
+            return html
+
+        pages: list[PageResult] = []
+        for data in crawled.values():
+            pages.append(PageResult(
+                page_id=data["page_id"],
+                url=data["url"],
+                html=rewrite_page(data),
+                page_title=data["page_title"],
+                forms=data["forms"],
+                links_internal=data["links_internal"],
+                links_external=data["links_external"],
+            ))
+
+        entry_data = crawled[entry_normalized]
+        entry_page = next(p for p in pages if p.page_id == ENTRY_PAGE_ID)
+
+        logger.info(
+            "Cloned %d page(s) for job %s (depth_limit=%d, pages_limit=%d)",
+            len(pages), job_id, depth_limit, pages_limit,
         )
-
-        rewritten_html = re.sub(
-            r'<form(?![^>]*action=)([^>]*)>',
-            f'<form action="{capture_url}"\\1>',
-            rewritten_html,
-            flags=re.IGNORECASE,
-        )
-
-        rewritten_html = re.sub(
-            r'(<form[^>]+)method=["\']get["\']',
-            r'\1method="POST"',
-            rewritten_html,
-            flags=re.IGNORECASE,
-        )
-
-        forms = self._extract_forms(page, job_id)
-        links_internal, links_external = self._extract_links(page, url)
-
-        title_el = page.find("title")
-        page_title = title_el.text if title_el else ""
 
         return CloneResult(
             job_id=job_id,
             url=url,
-            fetcher_used=fetcher_name,
-            html=rewritten_html,
+            fetcher_used=entry_data["fetcher_used"],
+            html=entry_page.html,
             clone_path="",  # filled by main.py after storage saves
             assets_downloaded=len(assets_bytes),
-            assets_failed=failed_count,
+            assets_failed=total_failed,
             assets_data=assets_bytes,
-            forms=forms,
-            links_internal=links_internal,
-            links_external=links_external,
-            page_title=page_title,
+            forms=entry_page.forms,
+            links_internal=entry_page.links_internal,
+            links_external=entry_page.links_external,
+            page_title=entry_page.page_title,
             timestamp=datetime.now(timezone.utc).isoformat(),
+            pages=pages,
         )
