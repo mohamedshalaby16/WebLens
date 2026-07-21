@@ -19,6 +19,7 @@ from models import (
     FormData,
     IntelligenceReport,
     PhishRiskReport,
+    SecurityRecommendations,
     WebLensReport,
 )
 
@@ -40,6 +41,16 @@ def _verdict_from_score(score: int) -> str:
         return "Low"
     if score <= 60:
         return "Moderate"
+    if score <= 80:
+        return "High"
+    return "Critical"
+
+
+def _verdict_to_priority(score: int) -> str:
+    if score <= 20:
+        return "Low"
+    if score <= 40:
+        return "Medium"
     if score <= 80:
         return "High"
     return "Critical"
@@ -181,37 +192,55 @@ class PhishRiskPlugin:
     async def assess_risk(
         self, html: str, forms_json: str, url: str
     ) -> PhishRiskReport:
-        prompt = f"""You are a phishing detection engine. Analyze the following web page and return a JSON object with exactly these keys:
-- score: integer 0-100 (overall phishing risk score)
-- red_flags: array of strings (each one a specific named indicator that raised the score)
-- explanation: string (one paragraph explaining the overall assessment and reasoning)
+        prompt = f"""You are a phishing detection engine analyzing a
+ORIGINAL website to assess whether it is a phishing site.
 
-Scoring guidelines — add these amounts when the indicator is present:
-+25  Form action submits to a different domain than the page URL
-+20  Page is served over HTTP instead of HTTPS
-+15  URL contains suspicious patterns (typosquatting, excessive hyphens, unusual subdomains, IP address instead of domain)
-+15  Urgency or fear language detected ("verify immediately", "account suspended", "confirm now", "unusual activity")
-+10  Hidden input fields present beyond standard CSRF tokens
-+10  High ratio of external to internal links (more than 3:1)
-+10  Login or payment form present with no privacy policy link
+IMPORTANT CONTEXT:
+- The page URL being analyzed is: {url}
+- This page was fetched and analyzed from its original source
+- Any form actions pointing to "localhost" are analysis artifacts
+  and should be COMPLETELY IGNORED — do not flag them
+- Any HTTP references to localhost are analysis artifacts and
+  should be COMPLETELY IGNORED — do not flag them
+- Judge the page based on its ORIGINAL URL and content only
+- The original URL scheme is: {"HTTPS" if url.startswith("https") else "HTTP"}
+
+Analyze whether the ORIGINAL website at {url} shows signs of being
+a phishing site targeting users.
+
+Return a JSON object with exactly these keys:
+- score: integer 0-100 (phishing risk score)
+- red_flags: array of strings (specific indicators found)
+- explanation: string (one paragraph assessment)
+
+Scoring guidelines — evaluate these on the ORIGINAL site:
++25  Original domain is suspicious (typosquatting, random chars,
+     excessive hyphens, IP address instead of domain name)
++20  Original page served over HTTP instead of HTTPS
++15  URL contains suspicious patterns
++15  Urgency or fear language in page content
++10  Login/payment form with no visible privacy policy on
+     the ORIGINAL page
++10  Very new or unknown domain
 +5   Page loads resources from many unrelated external domains
-+5   No contact information or about page links present
-+5   Very recent domain registration signals (if detectable from page content)
++5   No contact information visible
 
-Important:
-- A score of 0-20 means Safe
-- A score of 21-40 means Low risk
-- A score of 41-60 means Moderate risk
-- A score of 61-80 means High risk
-- A score of 81-100 means Critical risk
-- Be precise. Do not flag legitimate sites with false positives.
-- GitHub, Google, Microsoft, Amazon login pages should score 0-10.
+Known legitimate domains that should score 0-10:
+github.com, google.com, microsoft.com, amazon.com, facebook.com,
+apple.com, twitter.com, linkedin.com, paypal.com, alexbank.com,
+any well-known bank or government domain.
 
-Page URL: {url}
-Forms (JSON): {forms_json}
+Original page URL: {url}
+Original page scheme: {"HTTPS" if url.startswith("https") else "HTTP"}
+Original domain: {url.split("/")[2] if "//" in url else url}
 
-HTML (first 15000 chars):
+HTML content from original page (may contain localhost artifacts
+from analysis pipeline — ignore any localhost references):
 {html[:15000]}
+
+Forms on original page (ignore localhost action URLs — these are
+analysis artifacts, evaluate the original form purpose only):
+{forms_json}
 
 Return ONLY valid JSON. No markdown. No explanation. No code fences."""
 
@@ -236,6 +265,111 @@ Return ONLY valid JSON. No markdown. No explanation. No code fences."""
         )
 
 
+# ── Plugin 3 — Security Advisor ───────────────────────────────────────────────
+
+class SecurityAdvisorPlugin:
+    def __init__(self, kernel: sk.Kernel) -> None:
+        self._kernel = kernel
+
+    @kernel_function(
+        name="generate_recommendations",
+        description="Generate security recommendations"
+    )
+    async def generate_recommendations(
+        self,
+        url: str,
+        page_type: str,
+        tech_stack: str,
+        risk_score: int,
+        verdict: str,
+        red_flags: str,
+    ) -> SecurityRecommendations:
+
+        prompt = f"""You are a cybersecurity expert reviewing a
+website security assessment. Generate specific, actionable security
+recommendations for the website owner.
+
+Website Information:
+- URL: {url}
+- Page Type: {page_type}
+- Technology Stack: {tech_stack}
+- Phishing Risk Score: {risk_score}/100
+- Risk Verdict: {verdict}
+- Red Flags Found: {red_flags}
+
+Generate recommendations in three categories.
+
+Return a JSON object with exactly these keys:
+- anti_cloning: array of 3-5 specific steps to prevent this page
+  from being cloned or used in phishing attacks
+- phishing_protection: array of 3-5 specific steps to address the
+  red flags found and reduce the phishing risk score
+- general_hardening: array of 3-5 general security improvements
+  relevant to this specific page type and tech stack
+- priority: single string — "Low" if score 0-20, "Medium" if 21-40,
+  "High" if 41-80, "Critical" if 81-100
+
+Anti-cloning recommendations should include relevant items from:
+- Implementing bot detection (Cloudflare, reCAPTCHA)
+- Adding Content Security Policy headers
+- Using subresource integrity for scripts and stylesheets
+- Implementing dynamic CSRF tokens that expire quickly
+- Adding honeypot fields to forms
+- Enabling CDN hotlink protection for assets
+- Using signed, time-limited URLs for sensitive assets
+- Adding X-Frame-Options to prevent iframe embedding
+
+Phishing protection recommendations should directly address each
+red flag found and suggest specific fixes.
+
+General hardening should be tailored to the tech stack detected:
+- If Rails detected: suggest Rails-specific security gems
+- If WordPress detected: suggest WordPress security plugins
+- If Bootstrap detected: mention keeping it updated
+- Always include HTTPS if not present
+- Always include security headers if login form present
+
+Make recommendations specific and actionable, not generic.
+Each recommendation should be one clear sentence.
+
+Return ONLY valid JSON. No markdown. No code fences."""
+
+        result = await self._kernel.invoke_prompt(prompt)
+        raw = str(result).strip()
+        data = _parse_json_response(raw)
+
+        if not data:
+            return SecurityRecommendations(
+                anti_cloning=[
+                    "Implement Cloudflare or similar bot detection",
+                    "Add Content Security Policy headers",
+                    "Use dynamic CSRF tokens with short expiry",
+                ],
+                phishing_protection=[
+                    "Ensure all pages are served over HTTPS",
+                    "Add visible privacy policy link to all forms",
+                    "Register similar domain names to prevent typosquatting",
+                ],
+                general_hardening=[
+                    "Enable HTTP Strict Transport Security (HSTS)",
+                    "Add X-Frame-Options: DENY header",
+                    "Implement rate limiting on login endpoints",
+                ],
+                priority=_verdict_to_priority(risk_score),
+            )
+
+        return SecurityRecommendations(
+            anti_cloning=data.get("anti_cloning", []),
+            phishing_protection=data.get(
+                "phishing_protection", []
+            ),
+            general_hardening=data.get("general_hardening", []),
+            priority=data.get(
+                "priority", _verdict_to_priority(risk_score)
+            ),
+        )
+
+
 # ── SKAnalyzer — Main Orchestrator ────────────────────────────────────────────
 
 class SKAnalyzer:
@@ -243,6 +377,7 @@ class SKAnalyzer:
         self._kernel = _build_kernel()
         self._intel_plugin = PageIntelPlugin(self._kernel)
         self._risk_plugin = PhishRiskPlugin(self._kernel)
+        self._advisor_plugin = SecurityAdvisorPlugin(self._kernel)
 
     async def analyze(self, clone_result: CloneResult) -> WebLensReport:
         logger.info("Starting analysis for job %s", clone_result.job_id)
@@ -277,6 +412,21 @@ class SKAnalyzer:
             risk.red_flags,
         )
 
+        # Plugin 4 — Security Recommendations
+        recommendations = await self._advisor_plugin.generate_recommendations(
+            url=clone_result.url,
+            page_type=intel.page_type,
+            tech_stack=", ".join(intel.tech_stack) if intel.tech_stack else "Unknown",
+            risk_score=risk.score,
+            verdict=risk.verdict,
+            red_flags=", ".join(risk.red_flags) if risk.red_flags else "None",
+        )
+        logger.info(
+            "SecurityAdvisorPlugin done for job %s — priority=%s",
+            clone_result.job_id,
+            recommendations.priority,
+        )
+
         # Plugin 3 — Report Assembly
         clone_info = CloneInfo(
             fetcher_used=clone_result.fetcher_used,
@@ -296,6 +446,7 @@ class SKAnalyzer:
             clone=clone_info,
             intelligence=intel,
             phishing_risk=risk,
+            recommendations=recommendations,
         )
 
         logger.info("Report assembled for job %s", clone_result.job_id)

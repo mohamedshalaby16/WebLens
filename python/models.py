@@ -1,4 +1,6 @@
 from __future__ import annotations
+from typing import Optional
+
 from pydantic import BaseModel
 
 
@@ -79,6 +81,7 @@ class WebLensReport(BaseModel):
     clone: CloneInfo
     intelligence: IntelligenceReport
     phishing_risk: PhishRiskReport
+    recommendations: Optional[SecurityRecommendations] = None
 
 
 class JobStatus(BaseModel):
@@ -88,3 +91,51 @@ class JobStatus(BaseModel):
     timestamp: str
     risk_score: int | None = None
     verdict: str | None = None
+    user_id: str | None = None
+
+
+# ── User Models ───────────────────────────────────────────────────────
+
+class UserCreate(BaseModel):
+    email: str
+    username: str
+    password: str
+    role: str = "client"
+
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    user_id: str
+    email: str
+    username: str
+    role: str
+    created_at: str
+    is_active: bool
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserResponse
+
+
+class UserInDB(BaseModel):
+    user_id: str
+    email: str
+    username: str
+    password_hash: str
+    role: str
+    created_at: str
+    is_active: bool
+    last_login: Optional[str] = None
+
+
+class SecurityRecommendations(BaseModel):
+    anti_cloning: list[str]
+    phishing_protection: list[str]
+    general_hardening: list[str]
+    priority: str  # "Low" | "Medium" | "High" | "Critical"

@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebLens — Admin</title>
+  <style>
+    :root {
+      --bg-primary:    #0d0d0d;
+      --bg-card:       #141414;
+      --bg-hover:      #1c1c1c;
+      --border:        #2a2a2a;
+      --border-focus:  #404040;
+      --text-primary:  #f5f5f5;
+      --text-secondary:#a0a0a0;
+      --text-muted:    #555555;
+      --accent:        #e8ff47;
+      --safe:          #4ade80;
+      --low:           #86efac;
+      --moderate:      #fbbf24;
+      --high:          #f87171;
+      --critical:      #ef4444;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      min-height: 100vh;
+      padding-bottom: 48px;
+    }
+
+    /* ── Header ── */
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+    }
+
+    .header-inner {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .logo {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+
+    .logo-text {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    .logo-tagline {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .user-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .role-badge {
+      background: var(--border);
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 4px;
+      letter-spacing: 0.5px;
+    }
+
+    .btn-logout {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      cursor: pointer;
+      padding: 6px 12px;
+      font-size: 13px;
+      border-radius: 4px;
+    }
+
+    .btn-logout:hover { border-color: var(--border-focus); }
+
+    /* ── Main ── */
+    .main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 24px;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 14px;
+      padding: 10px 18px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ── Cards / Tables ── */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+
+    .card-title {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 16px;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th {
+      text-align: left;
+      color: var(--text-secondary);
+      font-weight: 600;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-primary);
+    }
+
+    tr:hover td { background: var(--bg-hover); }
+
+    .status-pill {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 4px;
+    }
+
+    .status-pill.active   { background: rgba(74,222,128,0.15); color: var(--safe); }
+    .status-pill.inactive { background: rgba(248,113,113,0.15); color: var(--high); }
+
+    .verdict-pill {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: var(--border);
+    }
+
+    .verdict-pill.safe     { color: var(--safe); }
+    .verdict-pill.low      { color: var(--low); }
+    .verdict-pill.moderate { color: var(--moderate); }
+    .verdict-pill.high     { color: var(--high); }
+    .verdict-pill.critical { color: var(--critical); }
+
+    .btn {
+      background: var(--accent);
+      color: #000;
+      font-weight: 700;
+      font-size: 13px;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 14px;
+      cursor: pointer;
+    }
+
+    .btn:hover { opacity: 0.9; }
+
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      font-weight: 400;
+      font-size: 13px;
+      border-radius: 6px;
+      padding: 8px 14px;
+      cursor: pointer;
+    }
+
+    .btn-secondary:hover { border-color: var(--border-focus); }
+
+    .btn-small {
+      font-size: 12px;
+      padding: 5px 10px;
+    }
+
+    /* ── Overview stats ── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+    }
+
+    .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+
+    .risk-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 16px;
+    }
+
+    .risk-card .stat-value.safe     { color: var(--safe); }
+    .risk-card .stat-value.low      { color: var(--low); }
+    .risk-card .stat-value.moderate { color: var(--moderate); }
+    .risk-card .stat-value.high     { color: var(--high); }
+    .risk-card .stat-value.critical { color: var(--critical); }
+
+    /* ── Modal (create client + view report) ── */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(0,0,0,0.85);
+      z-index: 1000;
+      overflow-y: auto;
+      padding: 40px 20px;
+    }
+
+    .modal-box {
+      max-width: 500px;
+      margin: 0 auto;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 28px;
+    }
+
+    .modal-box.wide { max-width: 700px; }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .modal-header h2 {
+      font-size: 16px;
+      color: var(--text-primary);
+    }
+
+    .field { margin-bottom: 14px; }
+
+    .field label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+
+    .field input {
+      width: 100%;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-size: 14px;
+      padding: 9px 12px;
+      outline: none;
+    }
+
+    .field input:focus { border-color: var(--border-focus); }
+
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .modal-error {
+      display: none;
+      color: var(--critical);
+      font-size: 13px;
+      margin-top: 12px;
+    }
+
+    .report-dump {
+      font-size: 13px;
+      white-space: pre-wrap;
+      color: var(--text-primary);
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+
+    .empty-note {
+      color: var(--text-muted);
+      font-size: 13px;
+      padding: 12px 0;
+    }
+  </style>
+</head>
+<body>
+
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-text">WebLens</span>
+        <span class="logo-tagline">Admin Dashboard</span>
+      </div>
+      <div class="user-info">
+        <span style="color:var(--text-secondary); font-size:13px;">
+          Welcome, <span id="currentUsername">--</span>
+        </span>
+        <span class="role-badge" id="roleBadge">ADMIN</span>
+        <button class="btn-logout" onclick="logout()">Logout</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="clients" onclick="switchTab('clients')">Clients</button>
+      <button class="tab-btn" data-tab="jobs" onclick="switchTab('jobs')">All Jobs</button>
+      <button class="tab-btn" data-tab="overview" onclick="switchTab('overview')">Overview</button>
+    </div>
+
+    <!-- TAB 1 — Clients -->
+    <section class="tab-panel active" id="tab-clients">
+      <div class="card">
+        <div class="panel-header">
+          <p class="card-title" style="margin:0;">Clients</p>
+          <button class="btn" onclick="openCreateClientModal()">+ Create Client</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Email</th>
+              <th>Status</th>
+              <th>Last Login</th>
+              <th>Jobs Count</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="clientsTableBody">
+            <tr><td colspan="6" class="empty-note">Loading clients...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- TAB 2 — All Jobs -->
+    <section class="tab-panel" id="tab-jobs">
+      <div class="card">
+        <p class="card-title">All Jobs</p>
+        <table>
+          <thead>
+            <tr>
+              <th>URL</th>
+              <th>Client</th>
+              <th>Risk Score</th>
+              <th>Verdict</th>
+              <th>Timestamp</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="jobsTableBody">
+            <tr><td colspan="6" class="empty-note">Loading jobs...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- TAB 3 — Overview -->
+    <section class="tab-panel" id="tab-overview">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="statTotalClients">--</div>
+          <div class="stat-label">Total Clients</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="statTotalJobs">--</div>
+          <div class="stat-label">Total Jobs</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="statTotalSubmissions">--</div>
+          <div class="stat-label">Total Submissions</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <p class="card-title">Jobs by Risk Level</p>
+        <div class="risk-grid">
+          <div class="stat-card risk-card">
+            <div class="stat-value safe" id="riskSafe">0</div>
+            <div class="stat-label">Safe</div>
+          </div>
+          <div class="stat-card risk-card">
+            <div class="stat-value low" id="riskLow">0</div>
+            <div class="stat-label">Low</div>
+          </div>
+          <div class="stat-card risk-card">
+            <div class="stat-value moderate" id="riskModerate">0</div>
+            <div class="stat-label">Moderate</div>
+          </div>
+          <div class="stat-card risk-card">
+            <div class="stat-value high" id="riskHigh">0</div>
+            <div class="stat-label">High</div>
+          </div>
+          <div class="stat-card risk-card">
+            <div class="stat-value critical" id="riskCritical">0</div>
+            <div class="stat-label">Critical</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Create Client Modal -->
+  <div class="modal-overlay" id="createClientModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h2>Create Client</h2>
+        <button class="btn-logout" onclick="closeCreateClientModal()">Close</button>
+      </div>
+      <form id="createClientForm">
+        <div class="field">
+          <label for="newUsername">Username</label>
+          <input type="text" id="newUsername" required />
+        </div>
+        <div class="field">
+          <label for="newEmail">Email</label>
+          <input type="email" id="newEmail" required />
+        </div>
+        <div class="field">
+          <label for="newPassword">Password</label>
+          <input type="password" id="newPassword" required />
+        </div>
+        <div class="modal-actions">
+          <button type="submit" class="btn">Create</button>
+          <button type="button" class="btn-secondary" onclick="closeCreateClientModal()">Cancel</button>
+        </div>
+        <div class="modal-error" id="createClientError"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- View Report Modal -->
+  <div class="modal-overlay" id="reportModal">
+    <div class="modal-box wide">
+      <div class="modal-header">
+        <h2>Job Report</h2>
+        <button class="btn-logout" onclick="closeReportModal()">Close</button>
+      </div>
+      <div class="report-dump" id="reportDump">Loading...</div>
+    </div>
+  </div>
+
+  <script>
+    /* ── Auth guard ───────────────────────────── */
+    const token = localStorage.getItem('weblens_token');
+    const user  = JSON.parse(localStorage.getItem('weblens_user') || 'null');
+
+    if (!token || !user) {
+      window.location.href = '/login';
+    } else if (user.role !== 'admin') {
+      window.location.href = '/';
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+      const usernameEl = document.getElementById('currentUsername');
+      if (usernameEl && user && user.username) {
+        usernameEl.textContent = user.username;
+      }
+      loadClients();
+      loadJobs();
+      setInterval(loadJobs, 15000);
+    });
+
+    function logout() {
+      localStorage.removeItem('weblens_token');
+      localStorage.removeItem('weblens_user');
+      window.location.href = '/login';
+    }
+
+    function authHeaders() {
+      return {
+        'Authorization': 'Bearer ' + localStorage.getItem('weblens_token'),
+        'Content-Type': 'application/json',
+      };
+    }
+
+    async function apiFetch(url, options) {
+      const res = await fetch(url, Object.assign({}, options, {
+        headers: Object.assign({}, authHeaders(), (options && options.headers) || {}),
+      }));
+
+      if (res.status === 401) {
+        logout();
+        return null;
+      }
+      if (res.status === 403) {
+        window.location.href = '/';
+        return null;
+      }
+      return res;
+    }
+
+    /* ── Tabs ─────────────────────────────────── */
+    function switchTab(name) {
+      document.querySelectorAll('.tab-btn').forEach(function (btn) {
+        btn.classList.toggle('active', btn.dataset.tab === name);
+      });
+      document.querySelectorAll('.tab-panel').forEach(function (panel) {
+        panel.classList.toggle('active', panel.id === 'tab-' + name);
+      });
+      if (name === 'clients') {
+        loadJobs();
+      }
+      if (name === 'jobs') {
+        loadJobs();
+      }
+      if (name === 'overview') {
+        loadJobs();
+      }
+    }
+
+    /* ── State ────────────────────────────────── */
+    let clientsCache = [];
+    let jobsCache = [];
+
+    /* ── Clients ──────────────────────────────── */
+    async function loadClients() {
+      const tbody = document.getElementById('clientsTableBody');
+      const res = await apiFetch('/admin/clients');
+      if (!res) return;
+
+      if (!res.ok) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-note">Failed to load clients.</td></tr>';
+        return;
+      }
+
+      clientsCache = await res.json();
+      renderClients();
+      refreshOverview();
+    }
+
+    function renderClients() {
+      const tbody = document.getElementById('clientsTableBody');
+
+      if (!clientsCache || clientsCache.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-note">No clients yet.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = '';
+      clientsCache.forEach(function (client) {
+        const jobCount = jobsCache.filter(function (j) {
+          return j.user_id === client.user_id;
+        }).length;
+
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td>' + escapeHtml(client.username) + '</td>' +
+          '<td>' + escapeHtml(client.email) + '</td>' +
+          '<td><span class="status-pill ' + (client.is_active ? 'active' : 'inactive') + '">' +
+            (client.is_active ? 'Active' : 'Inactive') + '</span></td>' +
+          '<td>' + (client.last_login || '—') + '</td>' +
+          '<td>' + jobCount + '</td>' +
+          '<td><button class="btn-secondary btn-small" data-user-id="' + client.user_id + '">' +
+            (client.is_active ? 'Deactivate' : 'Activate') + '</button></td>';
+
+        tr.querySelector('button').addEventListener('click', function () {
+          toggleClient(client.user_id);
+        });
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function toggleClient(userId) {
+      const res = await apiFetch('/admin/clients/' + userId + '/toggle', { method: 'PATCH' });
+      if (!res) return;
+
+      if (!res.ok) {
+        alert('Failed to toggle client status.');
+        return;
+      }
+
+      const data = await res.json();
+      const client = clientsCache.find(function (c) { return c.user_id === data.user_id; });
+      if (client) {
+        client.is_active = data.is_active;
+        renderClients();
+      }
+    }
+
+    function openCreateClientModal() {
+      document.getElementById('createClientError').style.display = 'none';
+      document.getElementById('createClientForm').reset();
+      document.getElementById('createClientModal').style.display = 'block';
+    }
+
+    function closeCreateClientModal() {
+      document.getElementById('createClientModal').style.display = 'none';
+    }
+
+    document.getElementById('createClientForm').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      const errorEl = document.getElementById('createClientError');
+      errorEl.style.display = 'none';
+
+      const payload = {
+        username: document.getElementById('newUsername').value.trim(),
+        email: document.getElementById('newEmail').value.trim(),
+        password: document.getElementById('newPassword').value,
+        role: 'client',
+      };
+
+      const res = await apiFetch('/admin/clients', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (!res) return;
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        errorEl.textContent = data.detail || 'Failed to create client.';
+        errorEl.style.display = 'block';
+        return;
+      }
+
+      closeCreateClientModal();
+      await loadClients();
+    });
+
+    /* ── Jobs ─────────────────────────────────── */
+    async function loadJobs() {
+      const tbody = document.getElementById('jobsTableBody');
+      const res = await apiFetch('/jobs');
+      if (!res) return;
+
+      if (!res.ok) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-note">Failed to load jobs.</td></tr>';
+        return;
+      }
+
+      jobsCache = await res.json();
+      renderJobs();
+      renderClients();
+      refreshOverview();
+    }
+
+    function clientLabelFor(userId) {
+      const client = clientsCache.find(function (c) { return c.user_id === userId; });
+      return client ? client.username : (userId || '—');
+    }
+
+    function renderJobs() {
+      const tbody = document.getElementById('jobsTableBody');
+
+      if (!jobsCache || jobsCache.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-note">No jobs yet.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = '';
+      jobsCache.forEach(function (job) {
+        const verdict = (job.verdict || '—');
+        const verdictClass = verdict.toLowerCase();
+
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td>' + escapeHtml(job.url || '—') + '</td>' +
+          '<td>' + escapeHtml(clientLabelFor(job.user_id)) + '</td>' +
+          '<td>' + (job.risk_score ?? '—') + '</td>' +
+          '<td><span class="verdict-pill ' + verdictClass + '">' + escapeHtml(verdict) + '</span></td>' +
+          '<td>' + (job.timestamp || '—') + '</td>' +
+          '<td><button class="btn-secondary btn-small">View Report</button></td>';
+
+        tr.querySelector('button').addEventListener('click', function () {
+          viewReport(job.job_id);
+        });
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function viewReport(jobId) {
+      const dump = document.getElementById('reportDump');
+      dump.textContent = 'Loading...';
+      document.getElementById('reportModal').style.display = 'block';
+
+      const res = await apiFetch('/report/' + jobId);
+      if (!res) return;
+
+      if (!res.ok) {
+        dump.textContent = 'Report not found.';
+        return;
+      }
+
+      const report = await res.json();
+      dump.textContent = JSON.stringify(report, null, 2);
+    }
+
+    function closeReportModal() {
+      document.getElementById('reportModal').style.display = 'none';
+    }
+
+    /* ── Overview ─────────────────────────────── */
+    async function refreshOverview() {
+      document.getElementById('statTotalClients').textContent = clientsCache.length;
+      document.getElementById('statTotalJobs').textContent = jobsCache.length;
+
+      const riskCounts = { safe: 0, low: 0, moderate: 0, high: 0, critical: 0 };
+      jobsCache.forEach(function (job) {
+        const v = (job.verdict || '').toLowerCase();
+        if (riskCounts.hasOwnProperty(v)) riskCounts[v]++;
+      });
+
+      document.getElementById('riskSafe').textContent     = riskCounts.safe;
+      document.getElementById('riskLow').textContent       = riskCounts.low;
+      document.getElementById('riskModerate').textContent  = riskCounts.moderate;
+      document.getElementById('riskHigh').textContent      = riskCounts.high;
+      document.getElementById('riskCritical').textContent  = riskCounts.critical;
+
+      let totalSubmissions = 0;
+      for (const job of jobsCache) {
+        const res = await apiFetch('/submissions/' + job.job_id);
+        if (!res || !res.ok) continue;
+        const subs = await res.json();
+        totalSubmissions += Array.isArray(subs) ? subs.length : 0;
+      }
+      document.getElementById('statTotalSubmissions').textContent = totalSubmissions;
+    }
+
+    /* ── Utility ──────────────────────────────── */
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+  </script>
+</body>
+</html>

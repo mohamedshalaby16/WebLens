@@ -280,6 +280,83 @@ def generate_pdf(report: WebLensReport) -> bytes:
             
     ))
 
+    # ── Security Recommendations ──────────────────────────────────────
+    if report.recommendations:
+        story += _section_header("Security Recommendations")
+
+        # Priority badge
+        priority = report.recommendations.priority
+        priority_colors = {
+            "Low":      (GREEN,    GREEN_BG),
+            "Medium":   (ORANGE,   ORANGE_BG),
+            "High":     (RED,      RED_BG),
+            "Critical": (DARK_RED, DARK_RED_BG),
+        }
+        p_fg, p_bg = priority_colors.get(priority, (NAVY, BLUE_LIGHT))
+
+        priority_t = Table(
+            [[Paragraph(
+                f"Action Priority: {priority.upper()}",
+                ParagraphStyle("pt", fontName="Helvetica-Bold",
+                    fontSize=12, textColor=p_fg)
+            )]],
+            colWidths=[PAGE_W - 2*MARGIN]
+        )
+        priority_t.setStyle(TableStyle([
+            ('BACKGROUND',    (0,0), (-1,-1), p_bg),
+            ('TOPPADDING',    (0,0), (-1,-1), 10),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+            ('LEFTPADDING',   (0,0), (-1,-1), 12),
+        ]))
+        story.append(priority_t)
+        story.append(Spacer(1, 8))
+
+        def _rec_table(title: str, items: list, color) -> list:
+            elements = []
+            elements.append(Paragraph(title, ParagraphStyle(
+                "rh", fontName="Helvetica-Bold", fontSize=10,
+                textColor=color, spaceAfter=4, spaceBefore=8
+            )))
+            rows = [[Paragraph(
+                f"→  {item}",
+                ParagraphStyle("ri", fontName="Helvetica",
+                    fontSize=9.5, textColor=TEXT, leading=13)
+            )] for item in items]
+            t = Table(rows, colWidths=[PAGE_W - 2*MARGIN])
+            t.setStyle(TableStyle([
+                ('ROWBACKGROUNDS', (0,0), (-1,-1),
+                 [SLATE_LIGHT, WHITE]),
+                ('TOPPADDING',     (0,0), (-1,-1), 5),
+                ('BOTTOMPADDING',  (0,0), (-1,-1), 5),
+                ('LEFTPADDING',    (0,0), (-1,-1), 10),
+                ('RIGHTPADDING',   (0,0), (-1,-1), 10),
+                ('GRID',           (0,0), (-1,-1), 0.3,
+                 colors.HexColor("#e2e8f0")),
+            ]))
+            elements.append(t)
+            return elements
+
+        if report.recommendations.anti_cloning:
+            story += _rec_table(
+                "Anti-Cloning Measures",
+                report.recommendations.anti_cloning,
+                NAVY
+            )
+
+        if report.recommendations.phishing_protection:
+            story += _rec_table(
+                "Phishing Protection",
+                report.recommendations.phishing_protection,
+                RED
+            )
+
+        if report.recommendations.general_hardening:
+            story += _rec_table(
+                "General Security Hardening",
+                report.recommendations.general_hardening,
+                TEAL
+            )
+
     # ── Footer ────────────────────────────────────────────────────────────────
     story.append(Spacer(1, 16))
     story.append(_rule(RULE_COL, 0.5))
