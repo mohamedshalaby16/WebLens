@@ -350,6 +350,81 @@
       overflow-y: auto;
     }
 
+    .report-view {
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+
+    .report-score-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .report-score-num {
+      font-size: 32px;
+      font-weight: 700;
+    }
+
+    .report-section {
+      margin-bottom: 16px;
+    }
+
+    .report-section-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    .report-info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px 16px;
+      font-size: 13px;
+    }
+
+    .report-info-grid .k { color: var(--text-secondary); }
+    .report-info-grid .v { color: var(--text-primary); }
+
+    .report-flag-list, .report-rec-list {
+      margin: 0;
+      padding-left: 18px;
+      font-size: 13px;
+      line-height: 1.8;
+    }
+
+    .report-flag-list li { color: var(--high); }
+
+    .report-explanation {
+      font-size: 13px;
+      color: var(--text-primary);
+      background: var(--bg-hover);
+      border-radius: 6px;
+      padding: 12px;
+      line-height: 1.6;
+    }
+
+    .clones-list { display: flex; flex-direction: column; gap: 10px; }
+
+    .clone-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--bg-hover);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      gap: 10px;
+    }
+
+    .clone-row .url { font-size: 13px; color: var(--text-primary); word-break: break-all; }
+    .clone-row .meta { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+    .clone-row .actions { display: flex; gap: 6px; flex-shrink: 0; }
+
     .empty-note {
       color: var(--text-muted);
       font-size: 13px;
@@ -370,6 +445,7 @@
           Welcome, <span id="currentUsername">--</span>
         </span>
         <span class="role-badge" id="roleBadge">ADMIN</span>
+        <button class="btn-secondary btn-small" onclick="window.location.href='/'">Cloning &amp; Jobs</button>
         <button class="btn-logout" onclick="logout()">Logout</button>
       </div>
     </div>
@@ -398,11 +474,12 @@
               <th>Status</th>
               <th>Last Login</th>
               <th>Jobs Count</th>
+              <th>Clones</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody id="clientsTableBody">
-            <tr><td colspan="6" class="empty-note">Loading clients...</td></tr>
+            <tr><td colspan="7" class="empty-note">Loading clients...</td></tr>
           </tbody>
         </table>
       </div>
@@ -510,9 +587,23 @@
     <div class="modal-box wide">
       <div class="modal-header">
         <h2>Job Report</h2>
-        <button class="btn-logout" onclick="closeReportModal()">Close</button>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-small" id="reportPdfBtn" onclick="exportReportPdf()">Export PDF</button>
+          <button class="btn-logout" onclick="closeReportModal()">Close</button>
+        </div>
       </div>
-      <div class="report-dump" id="reportDump">Loading...</div>
+      <div class="report-view" id="reportView">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Client Clones Modal -->
+  <div class="modal-overlay" id="clonesModal">
+    <div class="modal-box wide">
+      <div class="modal-header">
+        <h2>Clones — <span id="clonesClientName">--</span></h2>
+        <button class="btn-logout" onclick="closeClonesModal()">Close</button>
+      </div>
+      <div class="clones-list" id="clonesList">Loading...</div>
     </div>
   </div>
 
@@ -532,9 +623,8 @@
       if (usernameEl && user && user.username) {
         usernameEl.textContent = user.username;
       }
-      loadClients();
-      loadJobs();
-      setInterval(loadJobs, 15000);
+      refreshDashboard();
+      setInterval(refreshDashboard, 15000);
     });
 
     function logout() {
@@ -574,33 +664,36 @@
       document.querySelectorAll('.tab-panel').forEach(function (panel) {
         panel.classList.toggle('active', panel.id === 'tab-' + name);
       });
-      if (name === 'clients') {
-        loadJobs();
-      }
-      if (name === 'jobs') {
-        loadJobs();
-      }
-      if (name === 'overview') {
-        loadJobs();
-      }
+      refreshDashboard();
     }
 
     /* ── State ────────────────────────────────── */
     let clientsCache = [];
     let jobsCache = [];
 
+    /* ── Combined refresh (avoids clients/jobs render race) ── */
+    async function refreshDashboard() {
+      await Promise.all([fetchClients(), fetchJobs()]);
+      renderClients();
+      renderJobs();
+      refreshOverview();
+    }
+
     /* ── Clients ──────────────────────────────── */
+    async function fetchClients() {
+      const res = await apiFetch('/admin/clients');
+      if (!res || !res.ok) return false;
+      clientsCache = await res.json();
+      return true;
+    }
+
     async function loadClients() {
       const tbody = document.getElementById('clientsTableBody');
-      const res = await apiFetch('/admin/clients');
-      if (!res) return;
-
-      if (!res.ok) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-note">Failed to load clients.</td></tr>';
+      const ok = await fetchClients();
+      if (!ok) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-note">Failed to load clients.</td></tr>';
         return;
       }
-
-      clientsCache = await res.json();
       renderClients();
       refreshOverview();
     }
@@ -609,7 +702,7 @@
       const tbody = document.getElementById('clientsTableBody');
 
       if (!clientsCache || clientsCache.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-note">No clients yet.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-note">No clients yet.</td></tr>';
         return;
       }
 
@@ -627,11 +720,15 @@
             (client.is_active ? 'Active' : 'Inactive') + '</span></td>' +
           '<td>' + (client.last_login || '—') + '</td>' +
           '<td>' + jobCount + '</td>' +
-          '<td><button class="btn-secondary btn-small" data-user-id="' + client.user_id + '">' +
+          '<td><button class="btn-secondary btn-small" data-action="clones">View Clones</button></td>' +
+          '<td><button class="btn-secondary btn-small" data-action="toggle">' +
             (client.is_active ? 'Deactivate' : 'Activate') + '</button></td>';
 
-        tr.querySelector('button').addEventListener('click', function () {
+        tr.querySelector('[data-action="toggle"]').addEventListener('click', function () {
           toggleClient(client.user_id);
+        });
+        tr.querySelector('[data-action="clones"]').addEventListener('click', function () {
+          openClonesModal(client.user_id, client.username);
         });
 
         tbody.appendChild(tr);
@@ -696,17 +793,20 @@
     });
 
     /* ── Jobs ─────────────────────────────────── */
+    async function fetchJobs() {
+      const res = await apiFetch('/jobs');
+      if (!res || !res.ok) return false;
+      jobsCache = await res.json();
+      return true;
+    }
+
     async function loadJobs() {
       const tbody = document.getElementById('jobsTableBody');
-      const res = await apiFetch('/jobs');
-      if (!res) return;
-
-      if (!res.ok) {
+      const ok = await fetchJobs();
+      if (!ok) {
         tbody.innerHTML = '<tr><td colspan="6" class="empty-note">Failed to load jobs.</td></tr>';
         return;
       }
-
-      jobsCache = await res.json();
       renderJobs();
       renderClients();
       refreshOverview();
@@ -737,35 +837,196 @@
           '<td>' + (job.risk_score ?? '—') + '</td>' +
           '<td><span class="verdict-pill ' + verdictClass + '">' + escapeHtml(verdict) + '</span></td>' +
           '<td>' + (job.timestamp || '—') + '</td>' +
-          '<td><button class="btn-secondary btn-small">View Report</button></td>';
+          '<td>' +
+            '<button class="btn-secondary btn-small" data-action="report">View Report</button> ' +
+            '<button class="btn-secondary btn-small" data-action="clone">View Clone</button>' +
+          '</td>';
 
-        tr.querySelector('button').addEventListener('click', function () {
+        tr.querySelector('[data-action="report"]').addEventListener('click', function () {
           viewReport(job.job_id);
+        });
+        tr.querySelector('[data-action="clone"]').addEventListener('click', function () {
+          window.open('/clone/' + job.job_id, '_blank');
         });
 
         tbody.appendChild(tr);
       });
     }
 
+    let currentReportJobId = null;
+
     async function viewReport(jobId) {
-      const dump = document.getElementById('reportDump');
-      dump.textContent = 'Loading...';
+      currentReportJobId = jobId;
+      const view = document.getElementById('reportView');
+      view.innerHTML = 'Loading...';
       document.getElementById('reportModal').style.display = 'block';
 
       const res = await apiFetch('/report/' + jobId);
       if (!res) return;
 
       if (!res.ok) {
-        dump.textContent = 'Report not found.';
+        view.innerHTML = '<p class="empty-note">Report not found.</p>';
         return;
       }
 
       const report = await res.json();
-      dump.textContent = JSON.stringify(report, null, 2);
+      view.innerHTML = renderReportHtml(report);
+    }
+
+    function renderReportHtml(report) {
+      const risk  = report.phishing_risk || {};
+      const clone = report.clone || {};
+      const intel = report.intelligence || {};
+      const verdict = risk.verdict || '—';
+      const verdictClass = verdict.toLowerCase();
+      const scoreColors = { safe: '#4ade80', low: '#86efac', moderate: '#fbbf24', high: '#f87171', critical: '#ef4444' };
+      const scoreColor = scoreColors[verdictClass] || '#f5f5f5';
+
+      let html = '';
+
+      html += '<div class="report-score-row">' +
+        '<span class="report-score-num" style="color:' + scoreColor + '">' + (risk.score ?? '—') + '</span>' +
+        '<span style="color:var(--text-secondary);">/ 100</span>' +
+        '<span class="verdict-pill ' + verdictClass + '">' + escapeHtml(verdict) + '</span>' +
+        '</div>';
+
+      html += '<div class="report-section">' +
+        '<div class="report-section-title">Job Info</div>' +
+        '<div class="report-info-grid">' +
+          '<div><span class="k">URL: </span><span class="v">' + escapeHtml(report.url || '—') + '</span></div>' +
+          '<div><span class="k">Timestamp: </span><span class="v">' + escapeHtml(report.timestamp || '—') + '</span></div>' +
+        '</div></div>';
+
+      html += '<div class="report-section">' +
+        '<div class="report-section-title">Clone Summary</div>' +
+        '<div class="report-info-grid">' +
+          '<div><span class="k">Page Title: </span><span class="v">' + escapeHtml(clone.page_title || '—') + '</span></div>' +
+          '<div><span class="k">Fetcher: </span><span class="v">' + escapeHtml(clone.fetcher_used || '—') + '</span></div>' +
+          '<div><span class="k">Assets OK: </span><span class="v">' + (clone.assets_downloaded ?? '—') + '</span></div>' +
+          '<div><span class="k">Assets Failed: </span><span class="v">' + (clone.assets_failed ?? '—') + '</span></div>' +
+          '<div><span class="k">Forms: </span><span class="v">' + (clone.forms_found ?? '—') + '</span></div>' +
+          '<div><span class="k">Links: </span><span class="v">' + (clone.links_found ?? '—') + '</span></div>' +
+        '</div></div>';
+
+      html += '<div class="report-section">' +
+        '<div class="report-section-title">Page Intelligence</div>' +
+        '<div class="report-info-grid">' +
+          '<div><span class="k">Page Type: </span><span class="v">' + escapeHtml(intel.page_type || '—') + '</span></div>' +
+          '<div><span class="k">Tech Stack: </span><span class="v">' + escapeHtml((intel.tech_stack || []).join(', ') || '—') + '</span></div>' +
+          '<div><span class="k">External Links: </span><span class="v">' + (intel.external_links ?? '—') + '</span></div>' +
+          '<div><span class="k">Internal Links: </span><span class="v">' + (intel.internal_links ?? '—') + '</span></div>' +
+        '</div>' +
+        '<p style="font-size:13px; margin-top:8px; color:var(--text-primary);">' + escapeHtml(intel.summary || '—') + '</p>' +
+        '</div>';
+
+      if (risk.red_flags && risk.red_flags.length) {
+        html += '<div class="report-section">' +
+          '<div class="report-section-title" style="color:var(--high);">Red Flags</div>' +
+          '<ul class="report-flag-list">' +
+            risk.red_flags.map(function (f) { return '<li>' + escapeHtml(f) + '</li>'; }).join('') +
+          '</ul></div>';
+      }
+
+      html += '<div class="report-section">' +
+        '<div class="report-section-title">Assessment</div>' +
+        '<p class="report-explanation">' + escapeHtml(risk.explanation || '—') + '</p>' +
+        '</div>';
+
+      const rec = report.recommendations;
+      if (rec) {
+        html += '<div class="report-section">' +
+          '<div class="report-section-title">Security Recommendations (' + escapeHtml(rec.priority || '—') + ' priority)</div>';
+        function recBlock(title, items) {
+          if (!items || !items.length) return '';
+          return '<p style="font-size:12px; font-weight:700; margin-top:8px; color:var(--text-secondary);">' + title + '</p>' +
+            '<ul class="report-rec-list">' + items.map(function (i) { return '<li>' + escapeHtml(i) + '</li>'; }).join('') + '</ul>';
+        }
+        html += recBlock('Anti-Cloning Measures', rec.anti_cloning);
+        html += recBlock('Phishing Protection', rec.phishing_protection);
+        html += recBlock('General Hardening', rec.general_hardening);
+        html += '</div>';
+      }
+
+      return html;
+    }
+
+    async function exportReportPdf() {
+      if (!currentReportJobId) return;
+      const res = await apiFetch('/report/' + currentReportJobId + '/pdf');
+      if (!res) return;
+      if (!res.ok) {
+        alert('Failed to generate PDF.');
+        return;
+      }
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = 'weblens-report-' + currentReportJobId.slice(0, 8) + '.pdf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
     }
 
     function closeReportModal() {
       document.getElementById('reportModal').style.display = 'none';
+      currentReportJobId = null;
+    }
+
+    /* ── Client Clones ────────────────────────── */
+    async function openClonesModal(userId, username) {
+      document.getElementById('clonesClientName').textContent = username;
+      const list = document.getElementById('clonesList');
+      list.innerHTML = 'Loading...';
+      document.getElementById('clonesModal').style.display = 'block';
+
+      const res = await apiFetch('/admin/clients/' + userId + '/jobs');
+      if (!res) return;
+      if (!res.ok) {
+        list.innerHTML = '<p class="empty-note">Failed to load clones.</p>';
+        return;
+      }
+
+      const jobs = await res.json();
+      const completed = jobs.filter(function (j) { return j.status === 'completed'; });
+
+      if (!completed.length) {
+        list.innerHTML = '<p class="empty-note">No clones available for this client yet.</p>';
+        return;
+      }
+
+      list.innerHTML = '';
+      completed.forEach(function (job) {
+        const verdict = job.verdict || '—';
+        const row = document.createElement('div');
+        row.className = 'clone-row';
+        row.innerHTML =
+          '<div>' +
+            '<div class="url">' + escapeHtml(job.url || '—') + '</div>' +
+            '<div class="meta">' + escapeHtml(job.timestamp || '') + ' &middot; risk ' +
+              (job.risk_score ?? '—') + ' &middot; <span class="verdict-pill ' +
+              verdict.toLowerCase() + '">' + escapeHtml(verdict) + '</span></div>' +
+          '</div>' +
+          '<div class="actions">' +
+            '<button class="btn-secondary btn-small" data-action="open-clone">Open Clone</button>' +
+            '<button class="btn-secondary btn-small" data-action="open-report">Report</button>' +
+          '</div>';
+
+        row.querySelector('[data-action="open-clone"]').addEventListener('click', function () {
+          window.open('/clone/' + job.job_id, '_blank');
+        });
+        row.querySelector('[data-action="open-report"]').addEventListener('click', function () {
+          closeClonesModal();
+          viewReport(job.job_id);
+        });
+
+        list.appendChild(row);
+      });
+    }
+
+    function closeClonesModal() {
+      document.getElementById('clonesModal').style.display = 'none';
     }
 
     /* ── Overview ─────────────────────────────── */

@@ -148,6 +148,7 @@ class StorageManager:
                 "status": "running",
                 "timestamp": meta.get("timestamp", ""),
                 "created_at": meta.get("timestamp", ""),
+                "user_id": meta.get("user_id", "system"),
             }},
             upsert=True
         )

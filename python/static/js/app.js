@@ -24,6 +24,10 @@ function logout() {
   if (roleBadge && user.role) {
       roleBadge.textContent = user.role.toUpperCase();
   }
+  const adminDashboardBtn = document.getElementById('adminDashboardBtn');
+  if (adminDashboardBtn && user.role === 'admin') {
+      adminDashboardBtn.style.display = '';
+  }
 })();
 
 /* ── State ──────────────────────────────────── */
