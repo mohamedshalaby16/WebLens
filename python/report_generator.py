@@ -1,4 +1,6 @@
 import io
+from xml.sax.saxutils import escape as _xml_escape
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
@@ -37,6 +39,19 @@ WHITE       = colors.white
 
 def S(name, **kw):
     return ParagraphStyle(name, **kw)
+
+
+def _esc(text) -> str:
+    """
+    Escape text before handing it to reportlab's Paragraph, which parses
+    its input as a restricted XML-like markup (supports tags like <b>,
+    <br/>). Any untrusted or LLM-generated text (summaries, explanations,
+    red flags, recommendations, page titles/form actions pulled from the
+    cloned page) can contain a bare '&', '<', or '>' that isn't valid
+    markup, which crashes the parser with an XML "not well-formed" error.
+    Escaping &/</> makes it safe to render as literal text.
+    """
+    return _xml_escape(str(text))
 
 
 def _verdict_colors(verdict: str) -> tuple:
@@ -89,10 +104,10 @@ def _info_table(rows: list[tuple[str, str]]) -> Table:
     tdata = []
     for label, value in rows:
         tdata.append([
-            Paragraph(label, ParagraphStyle("lbl",
+            Paragraph(_esc(label), ParagraphStyle("lbl",
                 fontName="Helvetica-Bold", fontSize=9.5,
                 textColor=MUTED)),
-            Paragraph(str(value), ParagraphStyle("val",
+            Paragraph(_esc(value), ParagraphStyle("val",
                 fontName="Helvetica", fontSize=9.5,
                 textColor=TEXT, leading=13)),
         ])
@@ -241,7 +256,7 @@ def generate_pdf(report: WebLensReport) -> bytes:
             fontName="Helvetica-Bold", fontSize=10,
             textColor=RED, spaceAfter=4)))
         flag_rows = [[
-            Paragraph(f"⚠  {flag}", ParagraphStyle("fl",
+            Paragraph(f"⚠  {_esc(flag)}", ParagraphStyle("fl",
                 fontName="Helvetica", fontSize=9.5,
                 textColor=RED, leading=13))
         ] for flag in report.phishing_risk.red_flags]
@@ -271,7 +286,7 @@ def generate_pdf(report: WebLensReport) -> bytes:
         fontName="Helvetica-Bold", fontSize=10,
         textColor=NAVY, spaceAfter=4)))
     story.append(Paragraph(
-        report.phishing_risk.explanation,
+        _esc(report.phishing_risk.explanation),
         ParagraphStyle("ex", fontName="Helvetica", fontSize=10,
             textColor=TEXT, leading=15, alignment=TA_JUSTIFY,
             backColor=BLUE_LIGHT,
@@ -296,7 +311,7 @@ def generate_pdf(report: WebLensReport) -> bytes:
 
         priority_t = Table(
             [[Paragraph(
-                f"Action Priority: {priority.upper()}",
+                f"Action Priority: {_esc(priority.upper())}",
                 ParagraphStyle("pt", fontName="Helvetica-Bold",
                     fontSize=12, textColor=p_fg)
             )]],
@@ -318,7 +333,7 @@ def generate_pdf(report: WebLensReport) -> bytes:
                 textColor=color, spaceAfter=4, spaceBefore=8
             )))
             rows = [[Paragraph(
-                f"→  {item}",
+                f"→  {_esc(item)}",
                 ParagraphStyle("ri", fontName="Helvetica",
                     fontSize=9.5, textColor=TEXT, leading=13)
             )] for item in items]

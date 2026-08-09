@@ -13,3 +13,5 @@ slowapi
 passlib[bcrypt]
 bcrypt<4.1
 python-jose[cryptography]
+motor
+pymongo

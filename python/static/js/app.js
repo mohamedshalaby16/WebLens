@@ -24,6 +24,10 @@ function logout() {
   if (roleBadge && user.role) {
       roleBadge.textContent = user.role.toUpperCase();
   }
+  const adminDashboardBtn = document.getElementById('adminDashboardBtn');
+  if (adminDashboardBtn && user.role === 'admin') {
+      adminDashboardBtn.style.display = '';
+  }
 })();
 
 /* ── State ──────────────────────────────────── */
@@ -63,13 +67,29 @@ function handleSubmissionsClick() {
       }
       return r.json();
     })
-    .then(function(submissions) {
-      if (!submissions || submissions.length === 0) {
-        content.textContent = 'No submissions captured yet.\n\nGo to the cloned page and submit the form first.';
+    .then(function(data) {
+      if (!data) return; /* 401 already handled logout above */
+
+      var submissions = data.submissions || [];
+
+      var expiryLine;
+      if (data.capture_expires_at) {
+        var expiryDate = new Date(data.capture_expires_at);
+        expiryLine = data.capture_active
+          ? 'Captures active until: ' + expiryDate.toLocaleString()
+          : 'Capture window closed (expired ' + expiryDate.toLocaleString() + ')';
+      } else {
+        expiryLine = 'Capture window: unknown';
+      }
+
+      if (submissions.length === 0) {
+        content.textContent = expiryLine + '\n\n' +
+          'No submissions captured yet.\n\nGo to the cloned page and submit the form first.';
         return;
       }
 
-      var output = 'Captured Submissions (' + submissions.length + ')\n';
+      var output = expiryLine + '\n\n';
+      output += 'Captured Submissions (' + submissions.length + ')\n';
       output += '-'.repeat(50) + '\n\n';
 
       submissions.forEach(function(sub, index) {
@@ -196,6 +216,65 @@ checkHealth();
 setInterval(checkHealth, 30000);
 refreshBtn.addEventListener('click', checkHealth);
 
+/* ── Report polling ─────────────────────────── */
+
+const REPORT_POLL_INTERVAL_MS = 2000;
+/* The backend's crawl phase alone can take up to 15 minutes
+ * (cloner.py's TOTAL_CRAWL_TIMEOUT_SECONDS), and the AI analysis phase
+ * that runs after it (3 sequential LLM calls, possibly retried under
+ * rate limiting) has no timeout of its own — so this needs real headroom
+ * beyond just the crawl budget, not to equal it. Keep this in sync with
+ * TOTAL_CRAWL_TIMEOUT_SECONDS if that changes again. */
+const REPORT_POLL_TIMEOUT_MS   = 20 * 60 * 1000; /* 20 minutes */
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/* Polls GET /report/{jobId} until the background pipeline finishes.
+ * Returns the full report object on success, or null if a 401 already
+ * triggered a logout. Throws on failure or timeout. */
+async function pollReport(jobId) {
+  const startedAt = Date.now();
+
+  while (true) {
+    const res = await fetch('/report/' + jobId, {
+      headers: { 'Authorization': 'Bearer ' + localStorage.getItem('weblens_token') },
+    });
+
+    if (res.status === 401) {
+      logout();
+      return null;
+    }
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Report not found' }));
+      throw new Error(err.detail || 'Could not retrieve report');
+    }
+
+    const data = await res.json();
+
+    if (data.status === 'pending') {
+      if (Date.now() - startedAt > REPORT_POLL_TIMEOUT_MS) {
+        throw new Error('Analysis is taking too long. Please try again later.');
+      }
+      setLoadingStep(
+        data.pages_cloned
+          ? '→ Crawling... ' + data.pages_cloned + ' page(s) cloned so far'
+          : '→ Processing... this can take a minute'
+      );
+      await sleep(REPORT_POLL_INTERVAL_MS);
+      continue;
+    }
+
+    if (data.status === 'failed') {
+      throw new Error(data.error || 'Analysis failed.');
+    }
+
+    return data; /* completed — full report */
+  }
+}
+
 /* ── Analyze ────────────────────────────────── */
 
 async function analyze() {
@@ -247,25 +326,13 @@ async function analyze() {
     currentJobId = cloneData.job_id;
     window.currentJobId = currentJobId;
 
-    /* Step 2 — report */
+    /* Step 2 — poll for the report while the pipeline runs in the background */
     setLoadingStep('→ Running AI analysis...');
-    setStatus('Fetching report for job ' + currentJobId);
+    setStatus('Processing job ' + currentJobId);
 
-    const reportRes = await fetch('/report/' + currentJobId, {
-      headers: { 'Authorization': 'Bearer ' + localStorage.getItem('weblens_token') },
-    });
+    const report = await pollReport(currentJobId);
+    if (report === null) return; /* pollReport already handled a 401 logout */
 
-    if (reportRes.status === 401) {
-      logout();
-      return;
-    }
-
-    if (!reportRes.ok) {
-      const err = await reportRes.json().catch(() => ({ detail: 'Report not found' }));
-      throw new Error(err.detail || 'Could not retrieve report');
-    }
-
-    const report = await reportRes.json();
     renderReport(report);
     showPanel('results');
     clearBtn.style.display = '';
@@ -294,6 +361,12 @@ function renderReport(report) {
   const score     = risk.score ?? 0;
   const verdict   = risk.verdict ?? 'Unknown';
   const color     = scoreColor(score);
+
+  /* Analysis warning banner (AI parse failure — results may be incomplete) */
+  const warningBanner = document.getElementById('analysisWarningBanner');
+  if (warningBanner) {
+    warningBanner.style.display = report.analysis_warning ? '' : 'none';
+  }
 
   /* Score + bar */
   const riskScore = document.getElementById('riskScore');

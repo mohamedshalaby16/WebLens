@@ -18,7 +18,7 @@ class FormData(BaseModel):
 
 
 class PageResult(BaseModel):
-    page_id: str
+    page_id: str  # the page's normalized URL path, e.g. "/", "/about", "/login"
     url: str
     html: str
     page_title: str
@@ -42,6 +42,8 @@ class CloneResult(BaseModel):
     page_title: str
     timestamp: str
     pages: list[PageResult] = []
+    timed_out_pages: list[str] = []
+    entry_path: str = "/"  # URL path of the originally submitted page
 
     class Config:
         arbitrary_types_allowed = True
@@ -82,6 +84,7 @@ class WebLensReport(BaseModel):
     intelligence: IntelligenceReport
     phishing_risk: PhishRiskReport
     recommendations: Optional[SecurityRecommendations] = None
+    analysis_warning: Optional[str] = None
 
 
 class JobStatus(BaseModel):

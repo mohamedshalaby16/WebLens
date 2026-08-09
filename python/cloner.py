@@ -1,11 +1,11 @@
 import asyncio
-import hashlib
 import ipaddress
 import logging
 import re
 import secrets
 import socket
 import threading
+import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,12 +23,21 @@ logger = logging.getLogger(__name__)
 
 # Crawl bounds — a clone job walks internal links breadth-first up to these
 # limits so cloning a site can't turn into an unbounded scrape of the target.
-DEFAULT_MAX_DEPTH = 2
-DEFAULT_MAX_PAGES = 20
-HARD_MAX_DEPTH = 4
-HARD_MAX_PAGES = 50
+# DEFAULT_* covers a typical corporate site without every job defaulting to
+# the full 15-minute budget; HARD_* lets a caller explicitly request deeper
+# coverage via max_pages for a large site, capped well short of "crawl the
+# entire live site" — combined with the proxy fallback's lazy-upgrade path
+# (fetch_proxy_page/save_page), pages beyond even the hard cap still resolve
+# fully-styled on first visit, they just aren't pre-fetched.
+DEFAULT_MAX_DEPTH = 3
+DEFAULT_MAX_PAGES = 40
+HARD_MAX_DEPTH = 6
+HARD_MAX_PAGES = 150
 
-ENTRY_PAGE_ID = "index"
+# Timeouts — bound how long a single page fetch and the crawl as a whole
+# may run, so a stalled page or hung network request can't hang a job.
+PAGE_FETCH_TIMEOUT_SECONDS = 30.0
+TOTAL_CRAWL_TIMEOUT_SECONDS = 900.0
 
 
 def _normalize_url(url: str) -> str:
@@ -42,6 +51,152 @@ def _normalize_url(url: str) -> str:
     if len(path) > 1 and path.endswith("/"):
         path = path.rstrip("/")
     return f"{parsed.scheme}://{parsed.netloc.lower()}{path}"
+
+
+def _url_path(url: str) -> str:
+    """
+    Extract and normalize a URL's path component for routing/storage —
+    e.g. "/", "/about", "/products/shoes". Query string and fragment are
+    dropped (urlparse already separates them out), and a trailing slash
+    is stripped except on the root path.
+    """
+    path = urlparse(url).path or "/"
+    if len(path) > 1 and path.endswith("/"):
+        path = path.rstrip("/")
+    return path
+
+
+def _local_page_route(job_id: str, url_path: str) -> str:
+    """
+    The local /clone/{job_id}/... route a given URL path resolves to. The
+    root path gets the short form so it matches the dedicated
+    GET /clone/{job_id} route instead of the catch-all.
+    """
+    return f"/clone/{job_id}" if url_path == "/" else f"/clone/{job_id}{url_path}"
+
+
+_INTERCEPTOR_TEMPLATE_PATH = (
+    Path(__file__).parent / "static" / "js" / "weblens_interceptor.js"
+)
+_interceptor_template_cache: str | None = None
+
+
+def _get_interceptor_template() -> str:
+    """Read+cache the interceptor script template (constant for process lifetime)."""
+    global _interceptor_template_cache
+    if _interceptor_template_cache is None:
+        _interceptor_template_cache = _INTERCEPTOR_TEMPLATE_PATH.read_text(
+            encoding="utf-8"
+        )
+    return _interceptor_template_cache
+
+
+def _rewrite_forms_to_capture(html: str, job_id: str) -> str:
+    """
+    Rewrite every <form> in `html` to submit to /capture/{job_id} via POST,
+    so phishing-simulation form submissions are captured locally instead of
+    sent to the real target site. Shared by the full-crawl page rewriter
+    and the live single-page proxy fallback.
+    """
+    capture_url = f"http://localhost:8000/capture/{job_id}"
+
+    def rewrite_form_action(match):
+        return match.group(0).replace(match.group(1), capture_url)
+
+    html = re.sub(
+        r'<form[^>]+action=["\']([^"\']*)["\']',
+        rewrite_form_action,
+        html,
+        flags=re.IGNORECASE,
+    )
+    html = re.sub(
+        r'<form(?![^>]*action=)([^>]*)>',
+        f'<form action="{capture_url}"\\1>',
+        html,
+        flags=re.IGNORECASE,
+    )
+    html = re.sub(
+        r'(<form[^>]+)method=["\']get["\']',
+        r'\1method="POST"',
+        html,
+        flags=re.IGNORECASE,
+    )
+    return html
+
+
+def inject_interceptor(html: str, job_id: str, base_domain: str) -> str:
+    """
+    Inject the navigation-interceptor script as the first thing in <head>,
+    so it runs before any of the cloned page's own JavaScript. It patches
+    pushState/replaceState, fetch, XMLHttpRequest, window.location, and
+    <a> clicks so client-side (SPA-style) navigation stays under
+    /clone/{job_id}/... instead of leaving localhost.
+    """
+    try:
+        template = _get_interceptor_template()
+    except OSError as exc:
+        logger.warning("Could not load navigation interceptor script: %s", exc)
+        return html
+
+    script = template.replace("{{JOB_ID}}", job_id).replace(
+        "{{BASE_DOMAIN}}", base_domain
+    )
+    injection = f"<script>{script}</script>"
+
+    if "<head>" in html:
+        return html.replace("<head>", f"<head>{injection}", 1)
+    if "<HEAD>" in html:
+        return html.replace("<HEAD>", f"<HEAD>{injection}", 1)
+    return injection + html
+
+
+# Explicit extra blocks — not reliably covered by ipaddress's built-in
+# is_private/is_link_local/is_loopback flags on every Python version.
+_CGNAT_RANGE = ipaddress.ip_network("100.64.0.0/10")    # RFC 6598
+_IPV6_ULA_RANGE = ipaddress.ip_network("fc00::/7")       # RFC 4193
+
+
+def is_safe_ip(ip: str) -> bool:
+    """
+    Check whether a single resolved IP address (v4 or v6) is safe to
+    connect to — not private, loopback, reserved, link-local, multicast,
+    unspecified, CGNAT, or an IPv6 unique-local address.
+
+    Shared by is_safe_url() (validation time) and check_no_rebind()
+    (post-fetch re-check), so both use identical rules.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+
+    if (addr.is_private or
+        addr.is_loopback or
+        addr.is_reserved or
+        addr.is_link_local or
+        addr.is_multicast or
+        addr.is_unspecified):
+        return False
+
+    # _BaseNetwork.__contains__ returns False (not an error) when the
+    # address and network are different IP versions, so these are safe
+    # to check unconditionally.
+    if addr in _CGNAT_RANGE or addr in _IPV6_ULA_RANGE:
+        return False
+
+    return True
+
+
+def _resolve_ips(hostname: str) -> list[str]:
+    """
+    Resolve a hostname to every IPv4/IPv6 address it currently maps to.
+    Returns an empty list if resolution fails.
+    """
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        return []
+    return list({info[4][0] for info in infos})
 
 
 def is_safe_url(url: str) -> bool:
@@ -61,25 +216,42 @@ def is_safe_url(url: str) -> bool:
         if len(url) > 2000:
             return False
 
-        try:
-            ip_str = socket.gethostbyname(parsed.hostname)
-            ip = ipaddress.ip_address(ip_str)
-
-            if (ip.is_private or
-                ip.is_loopback or
-                ip.is_reserved or
-                ip.is_link_local or
-                ip.is_multicast or
-                ip.is_unspecified):
-                return False
-
-        except socket.gaierror:
+        ips = _resolve_ips(parsed.hostname)
+        if not ips:
             return False
 
-        return True
+        return all(is_safe_ip(ip) for ip in ips)
 
     except Exception:
         return False
+
+
+def check_no_rebind(hostname: str | None) -> bool:
+    """
+    Re-resolve `hostname` and verify every address it currently maps to
+    is still safe. Call this right after a fetch completes, before the
+    response is processed or stored, to catch DNS rebinding: a hostname
+    that resolved safely when is_safe_url() validated it, but was
+    repointed at a private/loopback/etc. address by the time (or after)
+    the actual connection was made.
+    """
+    if not hostname:
+        return False
+
+    ips = _resolve_ips(hostname)
+    if not ips:
+        return False
+
+    for ip in ips:
+        if not is_safe_ip(ip):
+            logger.warning(
+                "Potential DNS rebinding detected for host '%s' — "
+                "now resolves to unsafe IP %s",
+                hostname, ip,
+            )
+            return False
+
+    return True
 
 ASSET_TAGS = [
     ("img", "src"),
@@ -572,6 +744,82 @@ class ScraplingCloner:
                 anchors[href] = absolute
         return anchors
 
+    async def _process_page(
+        self,
+        html: str,
+        page,
+        page_url: str,
+        job_id: str,
+        base_domain: str,
+        anchors: dict[str, str],
+        page_routes: dict[str, str],
+        assets_bytes: dict[str, bytes],
+        url_to_local: dict[str, str],
+        raw_to_local: dict[str, str],
+        seen: set[str],
+        intercepted_assets: dict[str, bytes] | None = None,
+    ) -> tuple[str, dict[str, bytes], dict[str, str], dict[str, str], int]:
+        """
+        Run the full page-processing pipeline (asset download, CSS
+        processing, CSS inlining, viewport fix, form rewrite, link
+        rewrite, interceptor injection) on a single page's HTML. Used by
+        both the main crawl loop and the live proxy fallback, so every
+        page — crawled or lazily fetched — gets identical treatment.
+
+        assets_bytes/url_to_local/raw_to_local/seen are threaded through
+        (mutated and returned) so assets are deduped across pages in the
+        same job, exactly as the crawl loop already did before this was
+        extracted.
+
+        Returns: (rewritten_html, assets_bytes, url_to_local, raw_to_local, failed_count)
+        """
+        assets_bytes, url_to_local, raw_to_local, failed_count = \
+            await self._download_assets(
+                page, page_url, job_id,
+                assets_bytes=assets_bytes, url_to_local=url_to_local,
+                raw_to_local=raw_to_local, seen=seen,
+            )
+
+        for asset_url, asset_bytes in (intercepted_assets or {}).items():
+            if asset_url in url_to_local:
+                continue
+            extension = _safe_extension(asset_url)
+            filename = secrets.token_hex(8) + extension
+            while filename in assets_bytes:
+                filename = secrets.token_hex(8) + extension
+            assets_bytes[filename] = asset_bytes
+            local_path = f'/clone/assets/{job_id}/{filename}'
+            url_to_local[asset_url] = local_path
+            seen.add(asset_url)
+            parsed = urlparse(asset_url)
+            if parsed.path and parsed.path not in url_to_local:
+                url_to_local[parsed.path] = local_path
+                raw_to_local[parsed.path] = local_path
+
+        html = self._rewrite_html(html, url_to_local, raw_to_local, page_url)
+        html = self._inline_css(html, assets_bytes, url_to_local)
+        html = self._fix_viewport(html)
+        html = _rewrite_forms_to_capture(html, job_id)
+
+        # Point every internal link at the local /clone/{job_id}/...
+        # route — pages we actually crawled resolve immediately; pages
+        # outside the crawl's depth/page limits (or, for the proxy
+        # fallback, simply not in page_routes at all) still get a local
+        # route so navigation never leaves localhost.
+        for raw_href, absolute in anchors.items():
+            child_norm = _normalize_url(absolute)
+            target = page_routes.get(child_norm) or _local_page_route(
+                job_id, _url_path(absolute)
+            )
+            if raw_href == target:
+                continue
+            html = html.replace(f'"{raw_href}"', f'"{target}"')
+            html = html.replace(f"'{raw_href}'", f"'{target}'")
+
+        html = inject_interceptor(html, job_id, base_domain)
+
+        return html, assets_bytes, url_to_local, raw_to_local, failed_count
+
     async def _fetch_one(
         self, url: str, fetcher_name: str
     ) -> tuple[str, object, dict[str, bytes]]:
@@ -594,6 +842,71 @@ class ScraplingCloner:
         )
         return html_content, raw_page, {}
 
+    async def fetch_proxy_page(
+        self, target_url: str, job_id: str
+    ) -> tuple[str, dict[str, bytes]]:
+        """
+        Live, on-demand fetch of a page that fell outside the original
+        crawl's depth/page limits — used by the
+        /clone/proxy/{job_id}/{path} fallback route. Runs the SAME full
+        processing pipeline as a normally crawled page (assets, CSS,
+        inlining, link/form rewriting, interceptor injection) via
+        _process_page(), so the result is visually identical to what a
+        deeper initial crawl would have produced. The caller (main.py) is
+        responsible for persisting the returned HTML/assets via
+        storage.save_page(), upgrading this page from "proxied" to
+        "stored" for all future visits.
+
+        Returns: (rewritten_html, assets_bytes) — assets_bytes contains
+        ONLY the assets newly downloaded for this page (not the whole
+        job's asset set), since the job's existing asset map isn't
+        available in this single-page, uncached code path.
+        """
+        if not is_safe_url(target_url):
+            raise ValueError(f"URL '{target_url}' is not allowed for proxying.")
+
+        raw_page = await asyncio.wait_for(
+            asyncio.to_thread(self._fetch_page, target_url, "Fetcher"),
+            timeout=PAGE_FETCH_TIMEOUT_SECONDS,
+        )
+        html = (
+            raw_page.html_content
+            if hasattr(raw_page, "html_content")
+            else str(raw_page)
+        )
+
+        # DNS-rebinding re-check — same reasoning as the crawl loop: the
+        # target's origin was validated when the original job was created,
+        # but that could have been minutes, hours, or days ago.
+        if not check_no_rebind(urlparse(target_url).hostname):
+            raise ValueError(
+                f"Aborted proxy fetch for {target_url}: possible DNS rebinding detected"
+            )
+
+        base_domain = urlparse(target_url).netloc
+        anchors = self._extract_anchor_map(raw_page, target_url)
+        url_path = _url_path(target_url)
+        page_routes = {
+            _normalize_url(target_url): _local_page_route(job_id, url_path)
+        }
+
+        html, assets_bytes, _url_to_local, _raw_to_local, _failed = \
+            await self._process_page(
+                html=html,
+                page=raw_page,
+                page_url=target_url,
+                job_id=job_id,
+                base_domain=base_domain,
+                anchors=anchors,
+                page_routes=page_routes,
+                assets_bytes={},
+                url_to_local={},
+                raw_to_local={},
+                seen=set(),
+            )
+
+        return html, assets_bytes
+
     async def clone(
         self,
         url: str,
@@ -601,7 +914,14 @@ class ScraplingCloner:
         force_fetcher: str | None = None,
         max_depth: int | None = None,
         max_pages: int | None = None,
+        progress_callback=None,
     ) -> CloneResult:
+        """
+        progress_callback, if given, is called with the current crawled
+        page count every few pages — lets the caller surface crawl
+        progress (e.g. to job status) for jobs that can now legitimately
+        take several minutes at higher page counts.
+        """
         if not is_safe_url(url):
             raise ValueError(
                 f"URL '{url}' is not allowed. "
@@ -615,13 +935,24 @@ class ScraplingCloner:
         pages_limit = max(1, pages_limit)
 
         entry_normalized = _normalize_url(url)
+        base_domain = urlparse(url).netloc
 
         # ── Phase 1: breadth-first crawl of internal links ──────────────────
         visited: dict[str, str] = {}  # normalized_url -> page_id
         crawled: dict[str, dict] = {}  # normalized_url -> raw page data
         queue: deque[tuple[str, int]] = deque([(url, 0)])
+        timed_out_pages: list[str] = []
+        crawl_deadline = time.monotonic() + TOTAL_CRAWL_TIMEOUT_SECONDS
 
         while queue and len(crawled) < pages_limit:
+            if time.monotonic() > crawl_deadline:
+                logger.warning(
+                    "Job %s exceeded the %.0fs total crawl timeout — "
+                    "stopping with %d page(s) already cloned",
+                    job_id, TOTAL_CRAWL_TIMEOUT_SECONDS, len(crawled),
+                )
+                break
+
             current_url, depth = queue.popleft()
             norm = _normalize_url(current_url)
             if norm in visited:
@@ -639,18 +970,39 @@ class ScraplingCloner:
             )
 
             try:
-                html_content, page, intercepted_assets = \
-                    await self._fetch_one(current_url, fetcher_name)
+                html_content, page, intercepted_assets = await asyncio.wait_for(
+                    self._fetch_one(current_url, fetcher_name),
+                    timeout=PAGE_FETCH_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Page fetch timed out: %s", current_url)
+                timed_out_pages.append(current_url)
+                if norm == entry_normalized:
+                    raise RuntimeError(f"Fetch timed out for {url}") from None
+                continue
             except Exception as exc:
                 if norm == entry_normalized:
                     raise RuntimeError(f"Fetch failed for {url}: {exc}") from exc
                 logger.warning("Fetch failed for %s: %s", current_url, exc)
                 continue
 
-            page_id = (
-                ENTRY_PAGE_ID if norm == entry_normalized
-                else hashlib.sha1(norm.encode()).hexdigest()[:10]
-            )
+            # DNS-rebinding re-check — is_safe_url() validated this
+            # hostname before we connected, but the DNS record could
+            # have been repointed at a private/loopback address in the
+            # time between that check and the fetch actually completing.
+            # Re-resolve now, before this response's HTML/assets are
+            # processed or stored, and drop the page if it rebound.
+            if not check_no_rebind(urlparse(current_url).hostname):
+                if norm == entry_normalized:
+                    raise RuntimeError(
+                        f"Aborted fetch for {url}: possible DNS rebinding detected"
+                    )
+                logger.warning(
+                    "Skipping %s: possible DNS rebinding detected", current_url
+                )
+                continue
+
+            page_id = _url_path(current_url)
             visited[norm] = page_id
 
             anchors = self._extract_anchor_map(page, current_url)
@@ -673,102 +1025,63 @@ class ScraplingCloner:
                 "fetcher_used": fetcher_name,
             }
 
+            if progress_callback and (len(crawled) == 1 or len(crawled) % 5 == 0):
+                try:
+                    progress_callback(len(crawled))
+                except Exception as exc:
+                    logger.warning("progress_callback failed: %s", exc)
+
             if depth < depth_limit:
                 for absolute in anchors.values():
                     child_norm = _normalize_url(absolute)
                     if child_norm not in visited and len(crawled) + len(queue) < pages_limit:
                         queue.append((absolute, depth + 1))
 
-        # ── Phase 2: download assets, shared/deduped across all pages ───────
+        if entry_normalized not in crawled:
+            raise RuntimeError(
+                f"Fetch failed for {url}: total crawl timeout exceeded "
+                "before the entry page could be cloned"
+            )
+
+        # ── Phase 2: process each page — assets, CSS, forms, links, ─────────
+        # interceptor — via the shared _process_page() pipeline, deduping
+        # assets across pages exactly as before (page_routes only depends
+        # on crawled page paths, all known now that Phase 1 is done, so it
+        # can be built once upfront).
+        page_routes = {
+            norm: _local_page_route(job_id, data["page_id"])
+            for norm, data in crawled.items()
+        }
+
         assets_bytes: dict[str, bytes] = {}
         url_to_local: dict[str, str] = {}
         raw_to_local: dict[str, str] = {}
         seen: set[str] = set()
         total_failed = 0
 
+        pages: list[PageResult] = []
         for data in crawled.values():
-            assets_bytes, url_to_local, raw_to_local, failed_count = \
-                await self._download_assets(
-                    data["page"], data["url"], job_id,
-                    assets_bytes=assets_bytes, url_to_local=url_to_local,
-                    raw_to_local=raw_to_local, seen=seen,
+            html, assets_bytes, url_to_local, raw_to_local, failed_count = \
+                await self._process_page(
+                    html=data["html"],
+                    page=data["page"],
+                    page_url=data["url"],
+                    job_id=job_id,
+                    base_domain=base_domain,
+                    anchors=data["anchors"],
+                    page_routes=page_routes,
+                    assets_bytes=assets_bytes,
+                    url_to_local=url_to_local,
+                    raw_to_local=raw_to_local,
+                    seen=seen,
+                    intercepted_assets=data["intercepted_assets"],
                 )
             total_failed += failed_count
 
-            for asset_url, asset_bytes in data["intercepted_assets"].items():
-                if asset_url in url_to_local:
-                    continue
-                extension = _safe_extension(asset_url)
-                filename = secrets.token_hex(8) + extension
-                while filename in assets_bytes:
-                    filename = secrets.token_hex(8) + extension
-                assets_bytes[filename] = asset_bytes
-                local_path = f'/clone/assets/{job_id}/{filename}'
-                url_to_local[asset_url] = local_path
-                seen.add(asset_url)
-                parsed = urlparse(asset_url)
-                if parsed.path and parsed.path not in url_to_local:
-                    url_to_local[parsed.path] = local_path
-                    raw_to_local[parsed.path] = local_path
-
-        # ── Phase 3: rewrite each page's HTML (assets, CSS, forms, links) ───
-        page_routes = {
-            norm: (
-                f"/clone/{job_id}" if data["page_id"] == ENTRY_PAGE_ID
-                else f"/clone/{job_id}/page/{data['page_id']}"
-            )
-            for norm, data in crawled.items()
-        }
-
-        capture_url = f"http://localhost:8000/capture/{job_id}"
-
-        def rewrite_form_action(match):
-            return match.group(0).replace(match.group(1), capture_url)
-
-        def rewrite_page(data: dict) -> str:
-            html = self._rewrite_html(
-                data["html"], url_to_local, raw_to_local, data["url"]
-            )
-            html = self._inline_css(html, assets_bytes, url_to_local)
-            html = self._fix_viewport(html)
-
-            html = re.sub(
-                r'<form[^>]+action=["\']([^"\']*)["\']',
-                rewrite_form_action,
-                html,
-                flags=re.IGNORECASE,
-            )
-            html = re.sub(
-                r'<form(?![^>]*action=)([^>]*)>',
-                f'<form action="{capture_url}"\\1>',
-                html,
-                flags=re.IGNORECASE,
-            )
-            html = re.sub(
-                r'(<form[^>]+)method=["\']get["\']',
-                r'\1method="POST"',
-                html,
-                flags=re.IGNORECASE,
-            )
-
-            # Point internal links at other cloned pages when we crawled
-            # them; otherwise leave them pointing at the live site.
-            for raw_href, absolute in data["anchors"].items():
-                child_norm = _normalize_url(absolute)
-                target = page_routes.get(child_norm, absolute)
-                if raw_href == target:
-                    continue
-                html = html.replace(f'"{raw_href}"', f'"{target}"')
-                html = html.replace(f"'{raw_href}'", f"'{target}'")
-
-            return html
-
-        pages: list[PageResult] = []
-        for data in crawled.values():
             pages.append(PageResult(
                 page_id=data["page_id"],
                 url=data["url"],
-                html=rewrite_page(data),
+                html=html,
                 page_title=data["page_title"],
                 forms=data["forms"],
                 links_internal=data["links_internal"],
@@ -776,11 +1089,11 @@ class ScraplingCloner:
             ))
 
         entry_data = crawled[entry_normalized]
-        entry_page = next(p for p in pages if p.page_id == ENTRY_PAGE_ID)
+        entry_page = next(p for p in pages if p.page_id == entry_data["page_id"])
 
         logger.info(
-            "Cloned %d page(s) for job %s (depth_limit=%d, pages_limit=%d)",
-            len(pages), job_id, depth_limit, pages_limit,
+            "Cloned %d page(s) for job %s (depth_limit=%d, pages_limit=%d, timed_out=%d)",
+            len(pages), job_id, depth_limit, pages_limit, len(timed_out_pages),
         )
 
         return CloneResult(
@@ -798,4 +1111,6 @@ class ScraplingCloner:
             page_title=entry_page.page_title,
             timestamp=datetime.now(timezone.utc).isoformat(),
             pages=pages,
+            timed_out_pages=timed_out_pages,
+            entry_path=entry_page.page_id,
         )
