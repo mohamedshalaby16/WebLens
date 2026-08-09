@@ -60,6 +60,9 @@ def _parse_json_response(raw: str) -> dict:
     """
     Safely parse AI response to JSON.
     Handles cases where the AI wraps output in markdown code blocks.
+    On failure, returns {"parse_error": True} instead of {} so callers can
+    tell "the model returned an empty-ish object" apart from "the model's
+    output couldn't be parsed at all".
     """
     text = raw.strip()
 
@@ -70,8 +73,8 @@ def _parse_json_response(raw: str) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
-        logger.warning("JSON parse failed: %s | Raw: %s", e, text[:200])
-        return {}
+        logger.warning("LLM parse failed: %s | Raw output: %s", e, text[:500])
+        return {"parse_error": True}
 
 
 def _build_kernel() -> sk.Kernel:
@@ -162,17 +165,19 @@ HTML:
         forms_json: str,
         external_links: int,
         internal_links: int,
-    ) -> IntelligenceReport:
+    ) -> tuple[IntelligenceReport, bool]:
         raw = await self.analyze_page(html)
         data = _parse_json_response(raw)
+        parse_error = bool(data.get("parse_error"))
 
-        if not data:
+        if not data or parse_error:
             logger.warning("PageIntelPlugin returned unparseable response")
             data = {"page_type": "unknown", "tech_stack": [], "summary": "Unable to analyze page."}
+            parse_error = True
 
         forms = [FormData(**f) for f in json.loads(forms_json)]
 
-        return IntelligenceReport(
+        report = IntelligenceReport(
             page_type=data.get("page_type", "unknown"),
             tech_stack=data.get("tech_stack", []),
             summary=data.get("summary", ""),
@@ -180,6 +185,7 @@ HTML:
             external_links=external_links,
             internal_links=internal_links,
         )
+        return report, parse_error
 
 
 # ── Plugin 2 — Phishing Risk ──────────────────────────────────────────────────
@@ -191,7 +197,7 @@ class PhishRiskPlugin:
     @kernel_function(name="assess_risk", description="Score phishing risk 0-100")
     async def assess_risk(
         self, html: str, forms_json: str, url: str
-    ) -> PhishRiskReport:
+    ) -> tuple[PhishRiskReport, bool]:
         prompt = f"""You are a phishing detection engine analyzing a
 ORIGINAL website to assess whether it is a phishing site.
 
@@ -250,19 +256,22 @@ Return ONLY valid JSON. No markdown. No explanation. No code fences."""
         )
         raw = str(result).strip()
         data = _parse_json_response(raw)
+        parse_error = bool(data.get("parse_error"))
 
-        if not data:
+        if not data or parse_error:
             logger.warning("PhishRiskPlugin returned unparseable response, defaulting to score 0")
             data = {"score": 0, "red_flags": [], "explanation": "Analysis could not be completed."}
+            parse_error = True
 
         score = max(0, min(100, int(float(data.get("score", 0)))))
 
-        return PhishRiskReport(
+        report = PhishRiskReport(
             score=score,
             verdict=_verdict_from_score(score),
             red_flags=data.get("red_flags", []),
             explanation=data.get("explanation", ""),
         )
+        return report, parse_error
 
 
 # ── Plugin 3 — Security Advisor ───────────────────────────────────────────────
@@ -283,7 +292,7 @@ class SecurityAdvisorPlugin:
         risk_score: int,
         verdict: str,
         red_flags: str,
-    ) -> SecurityRecommendations:
+    ) -> tuple[SecurityRecommendations, bool]:
 
         prompt = f"""You are a cybersecurity expert reviewing a
 website security assessment. Generate specific, actionable security
@@ -337,9 +346,10 @@ Return ONLY valid JSON. No markdown. No code fences."""
         result = await self._kernel.invoke_prompt(prompt)
         raw = str(result).strip()
         data = _parse_json_response(raw)
+        parse_error = bool(data.get("parse_error"))
 
-        if not data:
-            return SecurityRecommendations(
+        if not data or parse_error:
+            report = SecurityRecommendations(
                 anti_cloning=[
                     "Implement Cloudflare or similar bot detection",
                     "Add Content Security Policy headers",
@@ -357,8 +367,9 @@ Return ONLY valid JSON. No markdown. No code fences."""
                 ],
                 priority=_verdict_to_priority(risk_score),
             )
+            return report, True
 
-        return SecurityRecommendations(
+        report = SecurityRecommendations(
             anti_cloning=data.get("anti_cloning", []),
             phishing_protection=data.get(
                 "phishing_protection", []
@@ -368,6 +379,7 @@ Return ONLY valid JSON. No markdown. No code fences."""
                 "priority", _verdict_to_priority(risk_score)
             ),
         )
+        return report, False
 
 
 # ── SKAnalyzer — Main Orchestrator ────────────────────────────────────────────
@@ -385,7 +397,7 @@ class SKAnalyzer:
         forms_json = json.dumps([f.model_dump() for f in clone_result.forms])
 
         # Plugin 1 — Page Intelligence
-        intel = await self._intel_plugin.get_intel(
+        intel, intel_parse_error = await self._intel_plugin.get_intel(
             html=clone_result.html,
             forms_json=forms_json,
             external_links=len(clone_result.links_external),
@@ -399,7 +411,7 @@ class SKAnalyzer:
         )
 
         # Plugin 2 — Phishing Risk
-        risk = await self._risk_plugin.assess_risk(
+        risk, risk_parse_error = await self._risk_plugin.assess_risk(
             html=clone_result.html,
             forms_json=forms_json,
             url=clone_result.url,
@@ -413,7 +425,7 @@ class SKAnalyzer:
         )
 
         # Plugin 4 — Security Recommendations
-        recommendations = await self._advisor_plugin.generate_recommendations(
+        recommendations, rec_parse_error = await self._advisor_plugin.generate_recommendations(
             url=clone_result.url,
             page_type=intel.page_type,
             tech_stack=", ".join(intel.tech_stack) if intel.tech_stack else "Unknown",
@@ -425,6 +437,12 @@ class SKAnalyzer:
             "SecurityAdvisorPlugin done for job %s — priority=%s",
             clone_result.job_id,
             recommendations.priority,
+        )
+
+        analysis_warning = (
+            "One or more AI analysis steps failed to parse. Results may be incomplete."
+            if (intel_parse_error or risk_parse_error or rec_parse_error)
+            else None
         )
 
         # Plugin 3 — Report Assembly
@@ -447,6 +465,7 @@ class SKAnalyzer:
             intelligence=intel,
             phishing_risk=risk,
             recommendations=recommendations,
+            analysis_warning=analysis_warning,
         )
 
         logger.info("Report assembled for job %s", clone_result.job_id)
